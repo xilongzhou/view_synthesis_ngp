@@ -140,29 +140,32 @@ class VIINTER(CondSIREN):
         return rgb, rand_inds[:, 0], rand_inds[:, 1], alphas, z
 
 class tiny_cuda(nn.Module):
-    def __init__(self, n_emb, config, norm_p = None, z_dim = 64, in_feat=2, out_feat=3):
+    def __init__(self, n_emb, config, norm_p = None, z_dim = 64, in_feat=2, out_feat=3, debug=False):
         super().__init__()
 
-        # try:
-        #     import tinycudann as tcnn
-        # except ImportError:
-        #     print("This sample requires the tiny-cuda-nn extension for PyTorch.")
-        #     print("You can install it by running:")
-        #     print("============================================================")
-        #     print("tiny-cuda-nn$ cd bindings/torch")
-        #     print("tiny-cuda-nn/bindings/torch$ python setup.py install")
-        #     print("============================================================")
-        #     sys.exit()
+        try:
+            import tinycudann as tcnn
+        except ImportError:
+            print("This sample requires the tiny-cuda-nn extension for PyTorch.")
+            print("You can install it by running:")
+            print("============================================================")
+            print("tiny-cuda-nn$ cd bindings/torch")
+            print("tiny-cuda-nn/bindings/torch$ python setup.py install")
+            print("============================================================")
+            sys.exit()
+
+        self.debug = debug
 
         # embedding
-        self.norm_p = norm_p
-        if self.norm_p is None or self.norm_p == -1:
-            self.emb = nn.Embedding(num_embeddings = n_emb, embedding_dim = z_dim)
-        else:
-            self.emb = nn.Embedding(num_embeddings = n_emb, embedding_dim = z_dim, max_norm=1.0, norm_type=norm_p)
+        if not self.debug:
+            self.norm_p = norm_p
+            if self.norm_p is None or self.norm_p == -1:
+                self.emb = nn.Embedding(num_embeddings = n_emb, embedding_dim = z_dim)
+            else:
+                self.emb = nn.Embedding(num_embeddings = n_emb, embedding_dim = z_dim, max_norm=1.0, norm_type=norm_p)
 
         # tiny-mlp
-        # self.net = tcnn.Network(n_input_dims=z_dim+in_feat, n_output_dims=out_feat, network_config=config["network"])
+        self.net = tcnn.Network(n_input_dims=z_dim+in_feat, n_output_dims=out_feat, network_config=config["network"])
 
     def normalize_z(self, z):
         if self.norm_p == -1:
@@ -176,19 +179,21 @@ class tiny_cuda(nn.Module):
 
     def forward(self, x, ind):
 
-        z = self.emb(ind)
-        z = self.normalize_z(z)
+        if not self.debug:
+            z = self.emb(ind)
+            z = self.normalize_z(z)
 
-        xyz_ = torch.cat([x, z.unsqueeze(1).repeat(1, x.shape[1], 1)], dim = -1).squeeze(0)
+            xyz_ = torch.cat([x, z.unsqueeze(1).repeat(1, x.shape[1], 1)], dim = -1).squeeze(0)
 
-        xyz_ = xyz_*0.5 + 0.5
-        # print(torch.amin(xyz_), torch.amax(xyz_))
+            xyz_ = xyz_*0.5 + 0.5
+            # print(torch.amin(xyz_), torch.amax(xyz_))
 
-        rgb = self.net(xyz_)
+            rgb = self.net(xyz_)
+
+        else:
+            rgb = self.net(x)
 
         return rgb
-
-
 
 
 ### ------------------------------------------------------------------------------

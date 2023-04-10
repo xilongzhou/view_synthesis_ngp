@@ -101,37 +101,6 @@ def regular_train(args):
 		net_blend = MLP_blend(D=args.mlp_d, in_feat=3*args.num_planes, out_feat=3, W=args.mlp_w, with_res=False, with_norm=args.use_norm).cuda()
 
 
-	# # scene specific MLP
-	# if args.reg_train:
-	# 	net_scene = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
-	# 	optimizer = torch.optim.Adam(list(net_scene.parameters()) + list(net_blend.parameters()), lr=args.lr)
-	# 	scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_iters, eta_min=args.lr*0.1)
-
-	# else:
-
-	# 	nets_scene = []
-	# 	optimizers = []
-	# 	for num in range(total_data):
-	# 		net_scene = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
-	# 		if num==0:
-	# 			nparams_decoder = sum(p.numel() for p in net_scene.parameters() if p.requires_grad)
-	# 			print('Number of learnable parameters (decoder): %d' %(nparams_decoder))
-	# 			nparams_nnblend = sum(p.numel() for p in net_scene.parameters() if p.requires_grad)
-	# 			print('Number of learnable parameters (blend nn): %d' %(nparams_nnblend))
-	# 		if args.no_inter_cons:
-	# 			optimizer = torch.optim.Adam(list(net_scene.parameters()) + list(net_blend.parameters()), lr=args.lr)
-	# 		else:
-	# 			if not args.no_lr_cons:
-	# 				optimizer = torch.optim.Adam(net_scene.parameters(), lr=args.lr)
-	# 			else:
-	# 				optimizer = torch.optim.Adam(list(net_scene.parameters()) + list(net_blend.parameters()), lr=args.lr)
-	# 		nets_scene.append(net_scene)
-	# 		optimizers.append(optimizer)
-	# 		# scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_iters, eta_min=args.lr*0.1)
-	# 	print(f"length of nets_scene is {total_data}")
-	# 	print(f"length of optimizers is {total_data}")
-
-
 	if args.use_viinter:
 		net_scene = VIINTER(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=True).cuda()
 	elif args.use_tcnn:
@@ -139,7 +108,7 @@ def regular_train(args):
 		with open(args.config) as config_file:
 			config = json.load(config_file)
 
-		net_scene = tiny_cuda(n_emb = 2, config=config ,norm_p = 1).cuda()
+		net_scene = tiny_cuda(n_emb = 2, config=config ,norm_p = 1, out_feat=3*args.num_planes, debug=args.debug).cuda()
 	else:
 		net_scene = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
 	
@@ -235,6 +204,16 @@ def regular_train(args):
 				dy = torch.from_numpy(coords_h).float()
 				meshy, meshx = torch.meshgrid((dy, dx))
 
+				# for debugging
+				half_dx =  0.5 / (w_res + base_shift * 2)
+				half_dy =  0.5 / h_res
+				xs = torch.linspace(half_dx, 1-half_dx, (w_res + base_shift * 2), device=device)
+				ys = torch.linspace(half_dy, 1-half_dy, h_res, device=device)
+				xv, yv = torch.meshgrid([xs, ys])
+				xy = torch.stack((yv.flatten(), xv.flatten())).t()
+
+				# print("grid_inp: ", grid_inp[0:10])
+				# print("xy: ", xy[0:10])
 
 				# --------------- end fetch ------------------
 
@@ -247,7 +226,8 @@ def regular_train(args):
 
 					if shuffle:
 						# ----------- shuffle ------------------------
-						flag = random.choice([True, False])
+						# flag = random.choice([True, False])
+						flag = True
 
 						if flag:
 
@@ -492,74 +472,43 @@ def regular_train(args):
 				torch.save(save_dict, "%s/model.ckpt"%(save_modelpath))
 				# save_progress() if not args.debug else save_progress_debug(model_out, gt_img, iter)
 
-				with torch.no_grad():
+				if not args.debug:
+					with torch.no_grad():
 
-					z0 = net_scene.ret_z(torch.LongTensor([0.]).cuda()).squeeze()
-					z1 = net_scene.ret_z(torch.LongTensor([1.]).cuda()).squeeze()
+						z0 = net_scene.ret_z(torch.LongTensor([0.]).cuda()).squeeze()
+						z1 = net_scene.ret_z(torch.LongTensor([1.]).cuda()).squeeze()
 
-					zi = linterp(inter.to(device), z0, z1).unsqueeze(0)
-					out = net_scene.forward_with_z(grid_inp, zi)
-					out = out.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
+						zi = linterp(inter.to(device), z0, z1).unsqueeze(0)
+						out = net_scene.forward_with_z(grid_inp, zi)
+						out = out.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
 
 				if not args.no_lr_cons:
 
 					# ----------- shuffle ------------------------
-					if shuffle:
-						# print("flag: ", flag)
-						# print("flag: ", flag)
-						# print("flag: ", flag)
-						if flag:
-							# saveimg(blend_l, f"{save_imgpath}/{iter}_blend_l.png")
-							# saveimg(imgL, f"{save_imgpath}/{iter}_imgL.png")			
-
-							# visualize layer
-							for i in range(args.num_planes):
-								mask_imgL = imgL*all_maskL[i]
-								# out_L_shift = out_L[:, 3*i:3*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
-								# saveimg(mask_imgL, f"{save_imgpath}/{i}_maskL_{iter}.png")
-								# saveimg(out_L_shift, f"{save_imgpath}/{i}_outL_shift_{iter}.png")
-
-								saveimg(out_L[:, 3*i:3*i+3], f"{save_imgpath}/{i}_outL_{iter}.png")
-								saveimg(out[:, 3*i:3*i+3], f"{save_imgpath}/{i}_out_{iter}.png")
-						else:
-
-							# saveimg(blend_r, f"{save_imgpath}/{iter}_blend_r.png")
-							# saveimg(imgR, f"{save_imgpath}/{iter}_imgR.png")
-
-							# visualize layer
-							for i in range(args.num_planes):
-
-								mask_imgR = imgR*all_maskR[i]
-								# out_R_shift = out_R[:, 3*i:3*i+3, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]]
-								# saveimg(mask_imgR, f"{save_imgpath}/{i}_maskR_{iter}.png")
-								# saveimg(out_R_shift, f"{save_imgpath}/{i}_outR_shift_{iter}.png")
-
-								saveimg(out_R[:, 3*i:3*i+3], f"{save_imgpath}/{i}_outR_{iter}.png")
-								saveimg(out[:, 3*i:3*i+3], f"{save_imgpath}/{i}_out_{iter}.png")
-
-					# ----------- end of shuffle ------------------------
-					else:
-						saveimg(blend_r, f"{save_imgpath}/{iter}_blend_r.png")
-						saveimg(blend_l, f"{save_imgpath}/{iter}_blend_l.png")
-						saveimg(imgR, f"{save_imgpath}/{iter}_imgR.png")
-						saveimg(imgL, f"{save_imgpath}/{iter}_imgL.png")			
-
+					if flag:
 						# visualize layer
 						for i in range(args.num_planes):
-							mask_imgL = imgL*all_maskL[i]
-							out_L_shift = out_L[:, 3*i:3*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
-							saveimg(mask_imgL, f"{save_imgpath}/{i}_maskL_{iter}.png")
-							saveimg(out_L_shift, f"{save_imgpath}/{i}_outL_shift_{iter}.png")
+							# mask_imgL = imgL*all_maskL[i]
+							# out_L_shift = out_L[:, 3*i:3*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
+							# saveimg(mask_imgL, f"{save_imgpath}/{i}_maskL_{iter}.png")
+							# saveimg(out_L_shift, f"{save_imgpath}/{i}_outL_shift_{iter}.png")
 
-							mask_imgR = imgR*all_maskR[i]
-							out_R_shift = out_R[:, 3*i:3*i+3, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]]
-							saveimg(mask_imgR, f"{save_imgpath}/{i}_maskR_{iter}.png")
-							saveimg(out_R_shift, f"{save_imgpath}/{i}_outR_shift_{iter}.png")
-
-							saveimg(out_R[:, 3*i:3*i+3], f"{save_imgpath}/{i}_outR_{iter}.png")
 							saveimg(out_L[:, 3*i:3*i+3], f"{save_imgpath}/{i}_outL_{iter}.png")
+							if not args.debug:
+								saveimg(out[:, 3*i:3*i+3], f"{save_imgpath}/{i}_out_{iter}.png")
+					else:
+						# visualize layer
+						for i in range(args.num_planes):
 
-							saveimg(out[:, 3*i:3*i+3], f"{save_imgpath}/{i}_out_{iter}.png")
+							# mask_imgR = imgR*all_maskR[i]
+							# out_R_shift = out_R[:, 3*i:3*i+3, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]]
+							# saveimg(mask_imgR, f"{save_imgpath}/{i}_maskR_{iter}.png")
+							# saveimg(out_R_shift, f"{save_imgpath}/{i}_outR_shift_{iter}.png")
+							saveimg(out_R[:, 3*i:3*i+3], f"{save_imgpath}/{i}_outR_{iter}.png")
+							
+							if not args.debug:
+								saveimg(out[:, 3*i:3*i+3], f"{save_imgpath}/{i}_out_{iter}.png")
+
 
 
 				if not args.no_inter_cons:
@@ -601,6 +550,7 @@ if __name__=='__main__':
 	parser.add_argument('--reg_train',help='regular training, for debugging',action='store_true')
 	parser.add_argument('--use_viinter',help='use viinter network or not',action='store_true')
 	parser.add_argument('--use_tcnn',help='use tcnn network or not',action='store_true')
+	parser.add_argument('--debug',help='use tcnn network or not',action='store_true')
 	parser.add_argument('--no_blend',help='no blend network',action='store_true')
 	parser.add_argument('--n_c',help='number of channel in netMet',type=int,default = 256)
 	parser.add_argument('--batch_size',help='batch size ',type=int,default = 2)
