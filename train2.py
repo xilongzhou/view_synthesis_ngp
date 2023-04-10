@@ -232,7 +232,7 @@ def regular_train(args):
 						if flag:
 
 							if not args.no_multi_cons:
-								out_L = net_scene(grid_inp, L_tag)
+								out_L = net_scene(grid_inp if not args.debug else xy, L_tag)
 								out_L = out_L.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
 							
 								for i in range(args.num_planes):
@@ -267,7 +267,7 @@ def regular_train(args):
 
 						else:
 							if not args.no_multi_cons:
-								out_R = net_scene(grid_inp, R_tag)
+								out_R = net_scene(grid_inp if not args.debug else xy, R_tag)
 								out_R = out_R.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
 
 								for i in range(args.num_planes):
@@ -505,7 +505,7 @@ def regular_train(args):
 							# saveimg(mask_imgR, f"{save_imgpath}/{i}_maskR_{iter}.png")
 							# saveimg(out_R_shift, f"{save_imgpath}/{i}_outR_shift_{iter}.png")
 							saveimg(out_R[:, 3*i:3*i+3], f"{save_imgpath}/{i}_outR_{iter}.png")
-							
+
 							if not args.debug:
 								saveimg(out[:, 3*i:3*i+3], f"{save_imgpath}/{i}_out_{iter}.png")
 
