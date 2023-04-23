@@ -5,14 +5,11 @@ from torch.nn.functional import interpolate
 from torch.optim import lr_scheduler, Adam
 from torch.utils.data import DataLoader
 import torchvision.transforms as T
-from torchvision.transforms.functional import gaussian_blur
 
 import numpy as np
 import cv2,os,time
 from tqdm import tqdm
 
-
-from models.xfields import XfieldsFlow
 from util.args import TrainingArguments
 
 
@@ -21,12 +18,11 @@ from PIL import Image
 
 from utils import VGGLoss, VGGpreprocess, saveimg
 
-from network import VIINTER, linterp, Unet_Blend, MLP_blend, CondSIREN, CondSIREN_meta, tiny_cuda
+from network import VIINTER, linterp, Unet_Blend, MLP_blend, CondSIREN
 import torch.nn.functional as F
 
 import random
 
-# from torchmeta.utils.gradient_based import gradient_update_parameters
 from collections import OrderedDict
 
 from my_dataloader import DataLoader_helper, DataLoader_helper2
@@ -54,10 +50,6 @@ def save_args(args):
 
 def regular_train(args):
 
-	# filter args
-	if args.no_blend:
-		args.no_inter_cons = True
-
 
 	device = "cuda"
 
@@ -73,13 +65,6 @@ def regular_train(args):
 	h_res = args.resolution[0]
 	w_res = args.resolution[1]
 
-	# hard-code max_disp
-	# max_disp = 0#args.max_disp
-	# planes = np.rint(np.linspace(0, max_disp, args.num_planes)/2)*2
-	# offsets = (planes//2).astype(int)
-	# base_shift = max_disp//2
-	# print(f"offset: {offsets}, base_shift: {base_shift}")
-
 	L_tag = torch.tensor([0]).cuda()
 	R_tag = torch.tensor([1]).cuda()
 
@@ -92,15 +77,57 @@ def regular_train(args):
 
 	print(f"length of data is {total_data}")
 
+	# ## ------------------------- no use dataloader -------------------
+
+	# all_ids = [0,1,2,3,4,5,6,7,8,9,10,11]
+
+	# R_id = 11
+	# L_id = 0
+	# dist = 1/(R_id - L_id)
+	# inter_list = [np.float32(i*dist) for i in range(R_id - L_id+1)]
+
+
+	# ########### load image 
+	# imgL_name = f"rgba_00000.png"
+	# imgR_name = f"rgba_00011.png"
+	# imgL_pil = Image.open(join(args.datapath, imgL_name)).convert("RGB")
+	# imgR_pil = Image.open(join(args.datapath, imgR_name)).convert("RGB")
+
+	# all_testimgs = []
+	# for rand_id in all_ids:
+	# 	imgtest_name = f"rgba_{rand_id:05d}.png"
+	# 	imgtest_pil = Image.open(join(args.datapath, imgtest_name)).convert("RGB")
+	# 	imgtest = torch.from_numpy(np.array(imgtest_pil)).permute(2,0,1)/255.
+	# 	all_testimgs.append(imgtest)
+
+	# imgL = torch.from_numpy(np.array(imgL_pil)).permute(2,0,1)/255.
+	# imgR = torch.from_numpy(np.array(imgR_pil)).permute(2,0,1)/255.
+
+
+	# ########### load mask 
+	# all_maskL = []
+	# all_maskR = []
+	# for i in range(self.plane):
+	# 	# left
+	# 	maskL_name = f"mask{i}_00000.png"
+	# 	maskL = np.array(Image.open(join(args.datapath, maskL_name)))
+	# 	maskL = torch.from_numpy(maskL)/255.
+	# 	# right
+	# 	maskR_name = f"mask{i}_00011.png"
+	# 	maskR = np.array(Image.open(join(args.datapath, maskR_name)))
+	# 	maskR = torch.from_numpy(maskR)/255.	
+	# 	all_maskL.append(maskL)		
+	# 	all_maskR.append(maskR)		
+	# all_maskL = torch.stack(all_maskL)
+	# all_maskR = torch.stack(all_maskR)
+
+
+	# ########### load disparity
+	# disparity_0_11 = np.load(os.path.join(path, "disp_0_11.npy"))
+
+
 
 	# ----------------------- define network --------------------------------------
-
-
-	# common net
-	if not args.no_blend:
-		net_blend = MLP_blend(D=args.mlp_d, in_feat=3*args.num_planes, out_feat=3, W=args.mlp_w, with_res=False, with_norm=args.use_norm).cuda()
-
-
 	if args.use_viinter:
 		net_scene = VIINTER(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=True).cuda()
 	elif args.use_tcnn:
@@ -116,18 +143,6 @@ def regular_train(args):
 		optimizer = torch.optim.Adam(net_scene.parameters(), lr=0.01)
 	else:
 		optimizer = torch.optim.Adam(net_scene.parameters(), lr=args.lr)
-
-
-	# if not args.no_lr_cons and not args.no_inter_cons:
-	# 	print("optimize blend and mlp seperately")
-	# 	optimizer_blend = torch.optim.Adam(net_blend.parameters(), lr=args.lr)
-	# 	optimizer = torch.optim.Adam(net_scene.parameters(), lr=args.lr)
-	# else:
-	# 	print("optimize blend and mlp together")
-	# 	if args.no_blend:
-	# 		optimizer = torch.optim.Adam(net_scene.parameters(), lr=args.lr)
-	# 	else:
-	# 		optimizer = torch.optim.Adam(list(net_scene.parameters()) + list(net_blend.parameters()), lr=args.lr)
 
 	# scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_iters, eta_min=args.lr*0.1)
 
@@ -159,12 +174,6 @@ def regular_train(args):
 		for i,data in enumerate(Mydata):
 			imgL_b, imgR_b, imgtest_b, inter_val_b, index_b, all_maskL_b, all_maskR_b, disp_b = data
 			# imgL_b, imgR_b, imgtest_b, inter_val_b, index_b = data
-
-		# if True:
-		# 	inter = random.randint(0,11)
-		# 	# inter = random.choice([0,11]) 
-		# 	imgtest = imgs_dict[inter]
-		# 	inter = torch.from_numpy(np.array(inter))
 
 			mseloss = torch.tensor(0.).cuda()
 			vgloss = torch.tensor(0.).cuda()
@@ -215,241 +224,36 @@ def regular_train(args):
 				# print("grid_inp: ", grid_inp[0:10])
 				# print("xy: ", xy[0:10])
 
-				# --------------- end fetch ------------------
+				# ----------- shuffle ------------------------
+				flag = random.choice([True, False])
+				# flag = True
 
-				# index optimzer and network
-				# if not args.reg_train:
-				# 	net_scene = nets_scene[index]
-				# 	optimizer = optimizers[index]
+				if flag:
 
-				if not args.no_lr_cons:
+					out_L = net_scene(grid_inp if not args.debug else xy, L_tag)
+					out_L = out_L.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
+				
+					for i in range(args.num_planes):
+						mask_imgL = imgL*all_maskL[i]
+						out_L_shift = out_L[:, 3*i:3*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
+						scene_loss = scene_loss + metric_mse(mask_imgL, out_L_shift*all_maskL[i])
 
-					if shuffle:
-						# ----------- shuffle ------------------------
-						# flag = random.choice([True, False])
-						flag = True
+				else:
+					out_R = net_scene(grid_inp if not args.debug else xy, R_tag)
+					out_R = out_R.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
 
-						if flag:
+					for i in range(args.num_planes):
+						mask_imgR = imgR*all_maskR[i]
+						out_R_shift = out_R[:, 3*i:3*i+3, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]]
+						scene_loss = scene_loss + metric_mse(mask_imgR, out_R_shift*all_maskR[i])
 
-							if not args.no_multi_cons:
-								out_L = net_scene(grid_inp if not args.debug else xy, L_tag)
-								out_L = out_L.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
-							
-								for i in range(args.num_planes):
-									mask_imgL = imgL*all_maskL[i]
-									out_L_shift = out_L[:, 3*i:3*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
-									scene_loss = scene_loss + metric_mse(mask_imgL, out_L_shift*all_maskL[i])
-
-							else:
-
-								# left
-								out_L = net_scene(grid_inp, L_tag)
-								out_L = out_L.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
-								multi_out = [out_L[:, 3*i:3*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]] for i in range(len(offsets))]
-								if args.no_blend:
-									blend_l = None
-									for l in range(args.num_planes):
-										if blend_l is None:
-											blend_l = multi_out[l]*all_maskL[l]
-										else:
-											blend_l += multi_out[l]*all_maskL[l]
-								else:
-									multi_out = torch.cat(multi_out,dim=1)
-									blend_l = net_blend(2*multi_out-1)
-								
-								loss_l = metric_mse(blend_l, imgL)
-								if args.w_vgg>0:
-									blend_l_vg = VGGpreprocess(blend_l)
-									imgL_vg = VGGpreprocess(imgL)
-									loss_l = loss_l + metric_vgg(blend_l_vg, imgL_vg) * args.w_vgg
-							
-								scene_loss = loss_l
-
-						else:
-							if not args.no_multi_cons:
-								out_R = net_scene(grid_inp if not args.debug else xy, R_tag)
-								out_R = out_R.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
-
-								for i in range(args.num_planes):
-									mask_imgR = imgR*all_maskR[i]
-									out_R_shift = out_R[:, 3*i:3*i+3, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]]
-									scene_loss = scene_loss + metric_mse(mask_imgR, out_R_shift*all_maskR[i])
-							else:
-
-								# right
-								out_R = net_scene(grid_inp, R_tag)
-								out_R = out_R.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
-								multi_out = [out_R[:, 3*i:3*i+3, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]] for i in range(len(offsets))]
-								if args.no_blend:
-									blend_r = None
-									for l in range(args.num_planes):
-										if blend_r is None:
-											blend_r = multi_out[l]*all_maskR[l]
-										else:
-											blend_r += multi_out[l]*all_maskR[l]
-								else:
-									multi_out = torch.cat(multi_out,dim=1)
-									blend_r = net_blend(2*multi_out-1)
-
-								loss_r = metric_mse(blend_r, imgR)
-								if args.w_vgg>0:
-									blend_r_vg = VGGpreprocess(blend_r)
-									imgR_vg = VGGpreprocess(imgR)
-									loss_r = loss_r + metric_vgg(blend_r_vg, imgR_vg) * args.w_vgg
-
-								scene_loss = loss_r
 					# ----------- end of shuffle ------------------------
 					
-					else:
+				optimizer.zero_grad()
+				scene_loss.backward()
+				optimizer.step()
+				# scheduler.step()
 
-						# left
-						out_L = net_scene(grid_inp, L_tag)
-						out_L = out_L.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
-						multi_out = [out_L[:, 3*i:3*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]] for i in range(len(offsets))]
-						if args.no_blend:
-							blend_l = None
-							for l in range(args.num_planes):
-								if blend_l is None:
-									blend_l = multi_out[l]*all_maskL[l]
-								else:
-									blend_l += multi_out[l]*all_maskL[l]
-						else:
-							multi_out = torch.cat(multi_out,dim=1)
-							blend_l = net_blend(2*multi_out-1)
-						loss_l = metric_mse(blend_l, imgL)
-						if args.w_vgg>0:
-							blend_l_vg = VGGpreprocess(blend_l)
-							imgL_vg = VGGpreprocess(imgL)
-							loss_l = loss_l + metric_vgg(blend_l_vg, imgL_vg) * args.w_vgg
-
-						# right
-						out_R = net_scene(grid_inp, R_tag)
-						out_R = out_R.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
-						multi_out = [out_R[:, 3*i:3*i+3, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]] for i in range(len(offsets))]
-						if args.no_blend:
-							blend_r = None
-							for l in range(args.num_planes):
-								if blend_r is None:
-									blend_r = multi_out[l]*all_maskR[l]
-								else:
-									blend_r += multi_out[l]*all_maskR[l]
-						else:
-							multi_out = torch.cat(multi_out,dim=1)
-							blend_r = net_blend(2*multi_out-1)
-						loss_r = metric_mse(blend_r, imgR)
-						if args.w_vgg>0:
-							blend_r_vg = VGGpreprocess(blend_r)
-							imgR_vg = VGGpreprocess(imgR)
-							loss_r = loss_r + metric_vgg(blend_r_vg, imgR_vg) * args.w_vgg
-						scene_loss = (loss_l + loss_r) * 0.5
-
-					# # add constraints
-					# inter_loss = 0
-					# if not args.no_multi_cons:
-					# 	for i in range(len(offsets)):
-
-					# 		mask_imgL = imgL*all_maskL[i]
-					# 		out_L_shift = out_L[:, 3*i:3*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
-
-					# 		mask_imgR = imgR*all_maskR[i]
-					# 		out_R_shift = out_R[:, 3*i:3*i+3, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]]
-
-					# 		# print("mask_imgR: ", mask_imgR)
-					# 		# print("out_R: ", out_R)
-
-					# 		inter_loss += (metric_mse(mask_imgL, out_L_shift*all_maskL[i]) + metric_mse(mask_imgR, out_R_shift*all_maskR[i]))*args.w_multi
-
-
-					# 	inter_loss = inter_loss/len(offsets)
-					
-					# scene_loss = scene_loss + inter_loss
-
-					optimizer.zero_grad()
-					scene_loss.backward()
-					optimizer.step()
-					# scheduler.step()
-
-				# compute outer loss
-				if not args.no_inter_cons:
-
-					# # ------------ debug ---------------------
-					# # left
-					# out_L = net_scene(grid_inp, L_tag)
-					# out_L = out_L.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
-					# multi_out = [out_L[:, 3*i:3*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]] for i in range(len(offsets))]
-					# multi_out = torch.cat(multi_out,dim=1)
-					# blend_l = net_blend(2*multi_out-1)
-					# loss_l = metric_mse(blend_l, imgL)
-					# if args.w_vgg>0:
-					# 	blend_l_vg = VGGpreprocess(blend_l)
-					# 	imgL_vg = VGGpreprocess(imgL)
-					# 	loss_l = loss_l + metric_vgg(blend_l_vg, imgL_vg) * args.w_vgg
-
-					# # right
-					# out_R = net_scene(grid_inp, R_tag)
-					# out_R = out_R.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
-					# multi_out = [out_R[:, 3*i:3*i+3, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]] for i in range(len(offsets))]
-					# multi_out = torch.cat(multi_out,dim=1)
-					# blend_r = net_blend(2*multi_out-1)
-					# loss_r = metric_mse(blend_r, imgR)
-					# if args.w_vgg>0:
-					# 	blend_r_vg = VGGpreprocess(blend_r)
-					# 	imgR_vg = VGGpreprocess(imgR)
-					# 	loss_r = loss_r + metric_vgg(blend_r_vg, imgR_vg) * args.w_vgg
-					
-					# mseloss = loss_r
-					# vgloss = loss_l
-					# ------------ debug ---------------------
-
-					z0 = net_scene.ret_z(torch.LongTensor([0.]).cuda()).squeeze()
-					z1 = net_scene.ret_z(torch.LongTensor([1.]).cuda()).squeeze()
-					zi = linterp(inter.to(device), z0, z1).unsqueeze(0)
-					out = net_scene.forward_with_z(grid_inp, zi)
-					out = out.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
-					off_scl = np.interp(inter, xp, fp)
-					multi_out_list=[]
-					for i in range(args.num_planes):
-						meshxw = meshx + (base_shift * 2 + off_scl * offsets[i]) / (w_res + base_shift * 2)
-						grid = torch.stack((meshxw, meshy), 2)[None].to(device).to(torch.float32)
-						multi_out = grid_sample(out[:, 3*i:3*i+3], grid, mode='bilinear', align_corners=True)[:, :, :, :-base_shift*2]
-						multi_out_list.append(multi_out)
-
-						if args.no_blend:
-							blend_test = None
-							for l in range(args.num_planes):
-								if blend_test is None:
-									blend_test = multi_out[l]*all_maskR[l]
-								else:
-									blend_test += multi_out[l]*all_maskR[l]
-						else:
-							multi_out = torch.cat(multi_out_list,dim=1)
-							blend_test = net_blend(2*multi_out-1) # multi out [0,1]-->[-1,1]
-
-					mseloss += metric_mse(blend_test, imgtest)
-					if args.w_vgg>0:
-						blend_test_vg = VGGpreprocess(blend_test)
-						imgtest_vg = VGGpreprocess(imgtest)
-						vgloss += metric_vgg(blend_test_vg, imgtest_vg) * args.w_vgg
-
-			if not args.no_inter_cons:
-				mseloss.div_(args.batch_size)
-				vgloss.div_(args.batch_size)
-				blend_loss = mseloss + vgloss
-
-				if not args.no_lr_cons:
-					optimizer_blend.zero_grad()
-					blend_loss.backward()
-					optimizer_blend.step()
-				else:
-					optimizer.zero_grad()
-					blend_loss.backward()
-					optimizer.step()
-					# scheduler.step()
-
-			# save to new 
-			# if not args.reg_train:
-			# 	nets_scene[index] = net_scene
-			# 	optimizers[index] = optimizer 
 
 			if (iter % args.progress_iter) ==0:
 
@@ -458,16 +262,9 @@ def regular_train(args):
 
 				save_dict = { 
 							'mlp':net_scene.state_dict(), \
-							'nn_blend':net_blend.state_dict() if not args.no_blend else None, \
 							'nfg':args.nfg, \
 							'n_layer':args.n_layer, \
-							'use_norm':args.use_norm, \
-							'n_c':args.n_c, \
-							'mlp_d':args.mlp_d, \
-							'mlp_w':args.mlp_w, \
-							'num_freqs_pe':args.num_freqs_pe, \
 							'num_planes':args.num_planes, \
-							'resolution':args.resolution, \
 							}
 				torch.save(save_dict, "%s/model.ckpt"%(save_modelpath))
 				# save_progress() if not args.debug else save_progress_debug(model_out, gt_img, iter)
@@ -482,21 +279,20 @@ def regular_train(args):
 						out = net_scene.forward_with_z(grid_inp, zi)
 						out = out.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
 
-				if not args.no_lr_cons:
 
-					# ----------- shuffle ------------------------
-					if flag:
-						# visualize layer
-						for i in range(args.num_planes):
-							# mask_imgL = imgL*all_maskL[i]
-							# out_L_shift = out_L[:, 3*i:3*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
-							# saveimg(mask_imgL, f"{save_imgpath}/{i}_maskL_{iter}.png")
-							# saveimg(out_L_shift, f"{save_imgpath}/{i}_outL_shift_{iter}.png")
+				# ----------- shuffle ------------------------
+				if flag:
+					# visualize layer
+					for i in range(args.num_planes):
+						# mask_imgL = imgL*all_maskL[i]
+						# out_L_shift = out_L[:, 3*i:3*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
+						# saveimg(mask_imgL, f"{save_imgpath}/{i}_maskL_{iter}.png")
+						# saveimg(out_L_shift, f"{save_imgpath}/{i}_outL_shift_{iter}.png")
 
-							saveimg(out_L[:, 3*i:3*i+3], f"{save_imgpath}/{i}_outL_{iter}.png")
-							if not args.debug:
-								saveimg(out[:, 3*i:3*i+3], f"{save_imgpath}/{i}_out_{iter}.png")
-					else:
+						saveimg(out_L[:, 3*i:3*i+3], f"{save_imgpath}/{i}_outL_{iter}.png")
+						if not args.debug:
+							saveimg(out[:, 3*i:3*i+3], f"{save_imgpath}/{i}_out_{iter}.png")
+				else:
 						# visualize layer
 						for i in range(args.num_planes):
 
@@ -509,11 +305,6 @@ def regular_train(args):
 							if not args.debug:
 								saveimg(out[:, 3*i:3*i+3], f"{save_imgpath}/{i}_out_{iter}.png")
 
-
-
-				if not args.no_inter_cons:
-					saveimg(blend_test, f"{save_imgpath}/{iter}_blendtest.png")
-					saveimg(imgtest, f"{save_imgpath}/{iter}_gttest.png")
 
 			iter +=1
 
@@ -535,8 +326,6 @@ if __name__=='__main__':
 	parser.add_argument('--w_vgg',help='weight of loss',type=float,default = 0.0)
 	parser.add_argument('--w_l1',help='weight of l1 loss',type=float,default = 1.0)
 	parser.add_argument('--w_multi',help='weight of multi constraints loss',type=float,default = 0.5)
-	parser.add_argument('--mlp_d',help='nnblend MLP layer number',type=int,default = 2)
-	parser.add_argument('--mlp_w',help='channel of nnblend MLP',type=int,default = 16)
 	parser.add_argument('--n_layer',help='layer number of meta MLP',type=int,default = 5)
 	parser.add_argument('--max_disp',help='max_disp for shifring',type=int,default = 10)
 	parser.add_argument('--resolution',help='resolution [h,w]',nargs='+',type=int,default = [270, 480])
@@ -551,7 +340,6 @@ if __name__=='__main__':
 	parser.add_argument('--use_viinter',help='use viinter network or not',action='store_true')
 	parser.add_argument('--use_tcnn',help='use tcnn network or not',action='store_true')
 	parser.add_argument('--debug',help='use tcnn network or not',action='store_true')
-	parser.add_argument('--no_blend',help='no blend network',action='store_true')
 	parser.add_argument('--n_c',help='number of channel in netMet',type=int,default = 256)
 	parser.add_argument('--batch_size',help='batch size ',type=int,default = 2)
 	parser.add_argument('--datapath',help='the path of training dataset',type=str,default="../../Dataset/SynData_s1_all")
