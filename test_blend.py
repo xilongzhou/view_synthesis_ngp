@@ -22,7 +22,7 @@ import imageio
 
 from utils import VGGLoss, VGGpreprocess, saveimg
 
-from network import VIINTER, linterp, Unet_Blend, MLP_blend, CondSIREN, CondSIREN_meta
+from network import VIINTER, linterp, Unet_Blend, MLP_blend, CondSIREN
 import torch.nn.functional as F
 
 import random
@@ -56,7 +56,7 @@ def regular_train(args):
 
 	device = "cuda"
 
-	save_testpath = os.path.join(args.savepath, "test")
+	save_testpath = os.path.join(args.savepath, f"{args.save_name}")
 	save_modelpath = os.path.join(args.savepath, "ckpt")
 
 	if not os.path.exists(save_testpath):
@@ -89,7 +89,7 @@ def regular_train(args):
 		net_blend = Unet_Blend(3*args.num_planes, args.num_planes if args.mask_blend else 3, 4, (h_res, w_res)).cuda()
 
 	
-	net_blend.load_state_dict(torch.load(save_modelpath+"/model.ckpt")['nn_blend'])
+	net_blend.load_state_dict(torch.load(save_modelpath+"/blend.ckpt")['nn_blend'])
 	print("finish loading netblending")
 
 	if args.use_viinter:
@@ -159,6 +159,7 @@ def regular_train(args):
 
 			# inter = torch.from_numpy(inter)
 			video_out = imageio.get_writer(os.path.join(save_testpath, f"{j}_inter.mp4"), mode='I', fps=12, codec='libx264')
+			video_mask = imageio.get_writer(os.path.join(save_testpath, f"{j}_mask.mp4"), mode='I', fps=12, codec='libx264')
 
 			video_dict = {}
 			for l in range(args.num_planes):
@@ -210,7 +211,12 @@ def regular_train(args):
 				blend_test = blend_test.detach().cpu().numpy()
 				video_out.append_data(blend_test)
 
+				blend_out = (blend_out[:,0:1].permute(0, 2, 3, 1).repeat(1,1,1,3) * 255).clamp(0, 255).to(torch.uint8).squeeze(0)
+				blend_out = blend_out.detach().cpu().numpy()
+				video_mask.append_data(blend_out)
+
 			video_out.close()
+			video_mask.close()
 
 		break
 
@@ -227,6 +233,7 @@ if __name__=='__main__':
 	parser.add_argument('--progress_iter',type=int,help='update frequency',default = 5000)
 	parser.add_argument('--lr',type=float,help='learning rate',default = 0.0001)
 	parser.add_argument('--savepath',type=str,help='saving path',default = 'resultsTest1')
+	parser.add_argument('--save_name',type=str,help='saved name of the folder',default = 'test')
 	parser.add_argument('--blend_type',type=str,help='mlp || unet',default = 'mlp')
 	parser.add_argument('--w_vgg',help='weight of loss',type=float,default = 0.0)
 	parser.add_argument('--w_l1',help='weight of l1 loss',type=float,default = 1.0)

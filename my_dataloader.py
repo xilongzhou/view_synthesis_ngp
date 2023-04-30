@@ -104,7 +104,9 @@ class DataLoader_helper2(data.Dataset):
 		self.plane = plane
 		self.load_model = load_model
 
-		self.total_length = len(os.listdir(path)) if not one_scene else 1
+		self.all_scenes = os.listdir(path)
+		self.total_length = len(self.all_scenes) if not one_scene else 1
+
 		print("length of data ", self.total_length)
 
 		# id of left and right stereo input
@@ -121,7 +123,7 @@ class DataLoader_helper2(data.Dataset):
 
 	def __getitem__(self, index):
 
-		path = join(self.path, str(index))
+		path = join(self.path, self.all_scenes[index])
 
 		rand_id = random.choice(self.all_ids) 
 
@@ -184,6 +186,97 @@ class DataLoader_helper2(data.Dataset):
 	def get_total_num(self):
 		return self.total_length
 
+
+
+# load mask and all images
+class DataLoader_helper_blend(data.Dataset):
+	"""docstring for  DataLoader_helper"""
+	def __init__(self, path, h_res, w_res, num=12, plane=6,):
+		super( DataLoader_helper_blend, self).__init__()
+		self.path = path
+		self.h_res = h_res
+		self.w_res = w_res
+		self.num = num
+		self.plane = plane
+
+		self.all_scenes = os.listdir(path)
+		self.total_length = len(self.all_scenes)
+
+		print("length of data ", self.total_length)
+
+		# id of left and right stereo input
+		self.all_ids = [i for i in range(self.num)]
+		print("self.all_ids: ", self.all_ids)
+		self.L_id = 0
+		self.R_id = 11
+		print("self.all_ids: ", self.all_ids)
+
+		# compute interpolated
+		dist = 1/(self.R_id - self.L_id)
+		self.inter_list = [np.float32(i*dist) for i in range(self.R_id - self.L_id+1)]
+		print("self.inter_list: ", self.inter_list)
+
+	def __getitem__(self, index):
+
+		path = join(self.path, self.all_scenes[index])
+
+		rand_id = random.choice(self.all_ids) 
+
+		# load image 
+		imgL_name = f"rgba_00000.png"
+		imgR_name = f"rgba_00011.png"
+		imgtest_name = f"rgba_{rand_id:05d}.png"
+
+		imgL_pil = Image.open(join(path, imgL_name)).convert("RGB")
+		imgR_pil = Image.open(join(path, imgR_name)).convert("RGB")
+		imgtest_pil = Image.open(join(path, imgtest_name)).convert("RGB")
+
+		# # resize if needed:
+		# imgL_pil = imgL_pil.resize((self.w_res, self.h_res), Image.LANCZOS )
+		# imgR_pil = imgR_pil.resize((self.w_res, self.h_res), Image.LANCZOS )
+		# imgtest_pil = imgtest_pil.resize((self.w_res, self.h_res), Image.LANCZOS )
+
+		imgL = torch.from_numpy(np.array(imgL_pil)).permute(2,0,1)/255.
+		imgR = torch.from_numpy(np.array(imgR_pil)).permute(2,0,1)/255.
+		imgtest = torch.from_numpy(np.array(imgtest_pil)).permute(2,0,1)/255.
+
+		# load mask
+		all_maskL = []
+		all_maskR = []
+		for i in range(self.plane):
+			
+			# left
+			maskL_name = f"mask{i}_00000.png"
+			maskL = np.array(Image.open(join(path, maskL_name)))
+			maskL = torch.from_numpy(maskL)/255.
+
+			# right
+			maskR_name = f"mask{i}_00011.png"
+			maskR = np.array(Image.open(join(path, maskR_name)))
+			maskR = torch.from_numpy(maskR)/255.	
+
+			all_maskL.append(maskL)		
+			all_maskR.append(maskR)		
+
+		all_maskL = torch.stack(all_maskL)
+		all_maskR = torch.stack(all_maskR)
+
+		# load disparity
+		disparity_0_11 = np.load(os.path.join(path, "disp_0_11.npy"))
+
+		# interpolated val
+		inter_val = self.inter_list[rand_id]
+
+		# load model
+		model_path = join(path, "model.ckpt")
+		return imgL, imgR, imgtest, inter_val, index, all_maskL, all_maskR, disparity_0_11, model_path
+
+
+	def __len__(self):
+		return self.total_length
+
+	def get_total_num(self):
+		return self.total_length
 
 
 

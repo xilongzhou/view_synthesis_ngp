@@ -21,7 +21,7 @@ from PIL import Image
 
 from utils import VGGLoss, VGGpreprocess, saveimg
 
-from network import VIINTER, linterp, Unet_Blend, MLP_blend, CondSIREN, CondSIREN_meta
+from network import VIINTER, linterp, Unet_Blend, MLP_blend, CondSIREN
 import torch.nn.functional as F
 
 import random
@@ -29,7 +29,7 @@ import random
 # from torchmeta.utils.gradient_based import gradient_update_parameters
 from collections import OrderedDict
 
-from my_dataloader import DataLoader_helper, DataLoader_helper2
+from my_dataloader import DataLoader_helper, DataLoader_helper2, DataLoader_helper_blend
 
 from torch.nn.functional import interpolate, grid_sample
 
@@ -72,7 +72,8 @@ def regular_train(args):
 
 	# # ---------------------- Dataloader ----------------------
 	# Myset = DataLoader_helper(args.datapath, h_res, w_res)
-	Myset = DataLoader_helper2(args.datapath, h_res, w_res, one_scene=args.load_one, load_model=True)
+	# Myset = DataLoader_helper2(args.datapath, h_res, w_res, one_scene=args.load_one, load_model=True)
+	Myset = DataLoader_helper_blend(args.datapath, h_res, w_res)
 	Mydata = DataLoader(dataset=Myset, batch_size=args.batch_size, shuffle=True, drop_last=True)
 
 	total_data = Myset.get_total_num()
@@ -87,18 +88,25 @@ def regular_train(args):
 	elif args.blend_type=="unet":
 		net_blend = Unet_Blend(3*args.num_planes, args.num_planes if args.mask_blend else 3, 4, (h_res, w_res)).cuda()
 
-
-	if args.use_viinter:
-		net_scene = VIINTER(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=True).cuda()
-	else:
-		net_scene = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
 	
+	if args.batch_size==1:
+		net_scene = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
+	else:
+		net_scene_list = []
+		net_scene1 = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
+		net_scene2 = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
+
+		net_scene_list.append(net_scene1)
+		net_scene_list.append(net_scene2)
+
+
+
 
 	optimizer_blend = torch.optim.Adam(net_blend.parameters(), lr=args.lr)
 	scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_blend, T_max=args.num_iters, eta_min=args.lr*0.1)
 
 
-	print("net_scene: ", net_scene)
+	# print("net_scene: ", net_scene)
 
 	# for metric
 	metric_l1 = nn.L1Loss()
@@ -155,18 +163,16 @@ def regular_train(args):
 
 				coords_h = np.linspace(-1, 1, h_res, endpoint=False)
 				coords_w = np.linspace(-1, 1,  w_res + base_shift * 2, endpoint=False)
-				# coords_w = np.linspace(-1, 1,  w_res, endpoint=False)
 				xy_grid = np.stack(np.meshgrid(coords_w, coords_h), -1)
 				xy_grid = torch.FloatTensor(xy_grid).cuda()
-				# if not args.rowbatch:
 				grid_inp = xy_grid.view(-1, 2).contiguous().unsqueeze(0)
-
 				dx = torch.from_numpy(coords_w).float()
 				dy = torch.from_numpy(coords_h).float()
 				meshy, meshx = torch.meshgrid((dy, dx))
 				
 				# load model
 				saved_dict = torch.load(model_path)
+				net_scene = net_scene_list[task_id]
 				net_scene.load_state_dict(saved_dict['mlp'])
 				# print("finsih loading network")
 
@@ -190,8 +196,6 @@ def regular_train(args):
 				blend_out = net_blend(2*multi_out-1) # multi out [0,1]-->[-1,1]
 
 				if args.mask_blend:
-					# print("multi_out: ",multi_out.shape)
-					# print("blend_out: ", blend_out.shape)
 					for k in range(args.num_planes):
 						if k==0:
 							blend_test = blend_out[:,0:1]*multi_out[:,0:3]
@@ -200,12 +204,12 @@ def regular_train(args):
 				else:
 					blend_test = blend_out
 
-				mseloss += metric_mse(blend_test, imgtest)
+				mseloss = mseloss + metric_mse(blend_test, imgtest)
 				if args.w_vgg>0:
 					blend_test_vg = VGGpreprocess(blend_test)
 					imgtest_vg = VGGpreprocess(imgtest)
-					vgloss += metric_vgg(blend_test_vg, imgtest_vg) * args.w_vgg
-
+					vgloss = vgloss + metric_vgg(blend_test_vg, imgtest_vg) * args.w_vgg
+				
 			mseloss.div_(args.batch_size)
 			vgloss.div_(args.batch_size)
 
@@ -223,7 +227,7 @@ def regular_train(args):
 				save_dict = { 
 							'nn_blend':net_blend.state_dict() if not args.no_blend else None, \
 							}
-				torch.save(save_dict, "%s/model.ckpt"%(save_modelpath))
+				torch.save(save_dict, "%s/blend.ckpt"%(save_modelpath))
 
 				# visualize layer
 				for i in range(args.num_planes):

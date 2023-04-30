@@ -13,6 +13,7 @@ parser.add_argument('--datapath', type=str, default="")
 parser.add_argument('--savepath', type=str, default="")        
 parser.add_argument('--num_iters', type=int, default=500000)        
 parser.add_argument('--range', type=str, default="0-20")        
+parser.add_argument('--add_mask',help='add mask',action='store_true')
 
 
 opt = parser.parse_args()
@@ -22,6 +23,8 @@ up = int(opt.range.split("-")[1])
 
 # print(bot)
 # print(up)
+
+other = " --add_mask" if opt.add_mask else ""
 
 for idx,scene_id in enumerate(os.listdir(opt.datapath)):
 
@@ -37,6 +40,7 @@ for idx,scene_id in enumerate(os.listdir(opt.datapath)):
         + " --savepath " + save_path\
         + " --datapath " + datapath\
         + " --num_iters " + str(opt.num_iters)\
+        + other
         
     print(cmd)
     os.system(cmd)

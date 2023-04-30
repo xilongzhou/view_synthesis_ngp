@@ -127,10 +127,15 @@ def regular_train(args):
 
 	for i in range(args.num_planes):
 		mask_imgL = imgL*all_maskL[i]
-		saveimg(mask_imgL, f"{save_imgpath}/{i}_maskL.png")
+		saveimg(mask_imgL, f"{save_imgpath}/{i}_outL_gt.png")
 
 		mask_imgR = imgR*all_maskR[i]
-		saveimg(mask_imgR, f"{save_imgpath}/{i}_maskR.png")
+		saveimg(mask_imgR, f"{save_imgpath}/{i}_outR_gt.png")
+
+		if args.add_mask:
+			saveimg(all_maskL[i].unsqueeze(0).repeat(3,1,1), f"{save_imgpath}/{i}_maskL_gt.png")
+			saveimg(all_maskR[i].unsqueeze(0).repeat(3,1,1), f"{save_imgpath}/{i}_maskR_gt.png")
+
 
 	# compute offsets, baseline (scene-dependent)
 	disp = torch.abs(disp[:,:,0])
@@ -157,7 +162,7 @@ def regular_train(args):
 			config = json.load(config_file)
 		net_scene = tiny_cuda(n_emb = 2, config=config ,norm_p = 1, out_feat=3*args.num_planes, debug=args.debug).cuda()
 	else:
-		net_scene = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
+		net_scene = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes if not args.add_mask else 4*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
 	
 	if args.use_tcnn:
 		optimizer = torch.optim.Adam(net_scene.parameters(), lr=0.01)
@@ -204,21 +209,39 @@ def regular_train(args):
 		if flag:
 
 			out_L = net_scene(grid_inp, L_tag)
-			out_L = out_L.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
+			out_L = out_L.reshape(1, h_res, -1, 3*args.num_planes if not args.add_mask else 4*args.num_planes).permute(0,3,1,2)
 		
 			for i in range(args.num_planes):
-				mask_imgL = imgL*all_maskL[i]
-				out_L_shift = out_L[:, 3*i:3*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
-				scene_loss = scene_loss + metric_mse(mask_imgL, out_L_shift*all_maskL[i])
+
+				if args.add_mask:
+					mask_imgL = imgL*all_maskL[i]
+					out_L_shift = out_L[:, 4*i:4*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
+					scene_loss = scene_loss + metric_mse(mask_imgL, out_L_shift*all_maskL[i])
+					mask_L_shift = out_L[:, 4*i+3:4*i+4, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
+					scene_loss = scene_loss + metric_mse(mask_L_shift, all_maskL[i])
+				else:
+					mask_imgL = imgL*all_maskL[i]
+					out_L_shift = out_L[:, 3*i:3*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
+					scene_loss = scene_loss + metric_mse(mask_imgL, out_L_shift*all_maskL[i])
+
+					
 
 		else:
 			out_R = net_scene(grid_inp, R_tag)
-			out_R = out_R.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
+			out_R = out_R.reshape(1, h_res, -1, 3*args.num_planes if not args.add_mask else 4*args.num_planes).permute(0,3,1,2)
 
 			for i in range(args.num_planes):
-				mask_imgR = imgR*all_maskR[i]
-				out_R_shift = out_R[:, 3*i:3*i+3, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]]
-				scene_loss = scene_loss + metric_mse(mask_imgR, out_R_shift*all_maskR[i])
+
+				if args.add_mask:
+					mask_imgR = imgR*all_maskR[i]
+					out_R_shift = out_R[:, 4*i:4*i+3, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]]
+					scene_loss = scene_loss + metric_mse(mask_imgR, out_R_shift*all_maskR[i])
+					mask_R_shift = out_R[:, 4*i+3:4*i+4, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]]
+					scene_loss = scene_loss + metric_mse(mask_R_shift, all_maskR[i])
+				else:
+					mask_imgR = imgR*all_maskR[i]
+					out_R_shift = out_R[:, 3*i:3*i+3, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]]
+					scene_loss = scene_loss + metric_mse(mask_imgR, out_R_shift*all_maskR[i])
 
 			# ----------- end of shuffle ------------------------
 			
@@ -249,7 +272,7 @@ def regular_train(args):
 
 				zi = linterp(inter, z0, z1).unsqueeze(0)
 				out = net_scene.forward_with_z(grid_inp, zi)
-				out = out.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
+				out = out.reshape(1, h_res, -1, 3*args.num_planes if not args.add_mask else 4*args.num_planes).permute(0,3,1,2)
 
 
 			# ----------- shuffle ------------------------
@@ -260,9 +283,18 @@ def regular_train(args):
 					# out_L_shift = out_L[:, 3*i:3*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
 					# saveimg(mask_imgL, f"{save_imgpath}/{i}_maskL_{iter}.png")
 					# saveimg(out_L_shift, f"{save_imgpath}/{i}_outL_shift_{iter}.png")
+					if args.add_mask:
 
-					saveimg(out_L[:, 3*i:3*i+3], f"{save_imgpath}/{i}_outL_{iter}.png")
-					saveimg(out[:, 3*i:3*i+3], f"{save_imgpath}/{i}_out_{iter}.png")
+						saveimg(out_L[:, 4*i:4*i+3], f"{save_imgpath}/{i}_outL_{iter}.png")
+						saveimg(out[:, 4*i:4*i+3], f"{save_imgpath}/{i}_out_{iter}.png")
+
+						saveimg(out_L[:, 4*i+3:4*i+4].repeat(1,3,1,1), f"{save_imgpath}/{i}_maskL_{iter}.png")
+						saveimg(out[:, 4*i+3:4*i+4].repeat(1,3,1,1), f"{save_imgpath}/{i}_mask_{iter}.png")
+
+					else:
+
+						saveimg(out_L[:, 3*i:3*i+3], f"{save_imgpath}/{i}_outL_{iter}.png")
+						saveimg(out[:, 3*i:3*i+3], f"{save_imgpath}/{i}_out_{iter}.png")
 			else:
 				# visualize layer
 				for i in range(args.num_planes):
@@ -271,8 +303,19 @@ def regular_train(args):
 					# out_R_shift = out_R[:, 3*i:3*i+3, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]]
 					# saveimg(mask_imgR, f"{save_imgpath}/{i}_maskR_{iter}.png")
 					# saveimg(out_R_shift, f"{save_imgpath}/{i}_outR_shift_{iter}.png")
-					saveimg(out_R[:, 3*i:3*i+3], f"{save_imgpath}/{i}_outR_{iter}.png")
-					saveimg(out[:, 3*i:3*i+3], f"{save_imgpath}/{i}_out_{iter}.png")
+
+					if args.add_mask:
+
+						saveimg(out_R[:, 4*i:4*i+3], f"{save_imgpath}/{i}_outR_{iter}.png")
+						saveimg(out[:, 4*i:4*i+3], f"{save_imgpath}/{i}_out_{iter}.png")
+
+						saveimg(out_R[:, 4*i+3:4*i+4].repeat(1,3,1,1), f"{save_imgpath}/{i}_maskR_{iter}.png")
+						saveimg(out[:, 4*i+3:4*i+4].repeat(1,3,1,1), f"{save_imgpath}/{i}_mask_{iter}.png")
+
+					else:
+						saveimg(out_R[:, 3*i:3*i+3], f"{save_imgpath}/{i}_outR_{iter}.png")
+						saveimg(out[:, 3*i:3*i+3], f"{save_imgpath}/{i}_out_{iter}.png")
+
 
 
 		iter +=1
@@ -289,7 +332,7 @@ if __name__=='__main__':
 	parser.add_argument('--num_planes',type=int,help='number of planes',default = 6)
 	parser.add_argument('--num_freqs_pe', type=int,help='#frequencies for positional encoding',default = 5)
 	parser.add_argument('--num_iters',type=int,help='num of iterations',default = 500000)
-	parser.add_argument('--progress_iter',type=int,help='update frequency',default = 10000)
+	parser.add_argument('--progress_iter',type=int,help='update frequency',default = 100000)
 	parser.add_argument('--lr',type=float,help='learning rate',default = 1e-4)
 	parser.add_argument('--savepath',type=str,help='saving path',default = 'resultsTest1')
 	parser.add_argument('--w_vgg',help='weight of loss',type=float,default = 0.0)
@@ -299,6 +342,7 @@ if __name__=='__main__':
 	parser.add_argument('--max_disp',help='max_disp for shifring',type=int,default = 10)
 	parser.add_argument('--resolution',help='resolution [h,w]',nargs='+',type=int,default = [360, 640])
 	parser.add_argument('--use_norm',help='use my network for debugging',action='store_true')
+	parser.add_argument('--add_mask',help='output mask',action='store_true')
 	parser.add_argument('--use_sigmoid',help='add sigmoid to the end of CondSiren',action='store_true')
 	parser.add_argument('--no_lr_cons',help='use my network for debugging',action='store_true')
 	parser.add_argument('--load_one',help='load one scene only',action='store_true')
