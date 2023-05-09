@@ -101,16 +101,19 @@ def regular_train(args):
 	for i in range(args.num_planes):
 		# left
 		maskL_name = f"mask{i}_00000.png"
-		maskL = np.array(Image.open(join(args.datapath,maskL_name)))
-		maskL = torch.from_numpy(maskL)/255.
+		maskL = np.array(Image.open(join(args.datapath,maskL_name))).astype(float)
+		maskL = torch.from_numpy(maskL)
 		# right
 		maskR_name = f"mask{i}_00011.png"
-		maskR = np.array(Image.open(join(args.datapath,maskR_name)))
-		maskR = torch.from_numpy(maskR)/255.	
+		maskR = np.array(Image.open(join(args.datapath,maskR_name))).astype(float)
+		maskR = torch.from_numpy(maskR)
+		print("maskR: ",maskR)
 		all_maskL.append(maskL)		
 		all_maskR.append(maskR)		
 	all_maskL = torch.stack(all_maskL)
 	all_maskR = torch.stack(all_maskR)
+
+
 
 	########### load disparity
 	disp = np.load(os.path.join(args.datapath,"disp_0_11.npy"))
@@ -223,8 +226,6 @@ def regular_train(args):
 					mask_imgL = imgL*all_maskL[i]
 					out_L_shift = out_L[:, 3*i:3*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
 					scene_loss = scene_loss + metric_mse(mask_imgL, out_L_shift*all_maskL[i])
-
-					
 
 		else:
 			out_R = net_scene(grid_inp, R_tag)

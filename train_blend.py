@@ -86,21 +86,16 @@ def regular_train(args):
 	if args.blend_type=="mlp":
 		net_blend = MLP_blend(D=args.mlp_d, in_feat=3*args.num_planes, out_feat=3, W=args.mlp_w, with_res=False, with_norm=args.use_norm).cuda()
 	elif args.blend_type=="unet":
-		net_blend = Unet_Blend(3*args.num_planes, args.num_planes if args.mask_blend else 3, 4, (h_res, w_res)).cuda()
-
-	
+		net_blend = Unet_Blend(3*args.num_planes if not args.add_mask else 4*args.num_planes, args.num_planes if args.mask_blend else 3, 4, (h_res, w_res)).cuda()
 	if args.batch_size==1:
 		net_scene = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
 	else:
 		net_scene_list = []
-		net_scene1 = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
-		net_scene2 = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
+		net_scene1 = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes if not args.add_mask else 4*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
+		net_scene2 = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes if not args.add_mask else 4*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
 
 		net_scene_list.append(net_scene1)
 		net_scene_list.append(net_scene2)
-
-
-
 
 	optimizer_blend = torch.optim.Adam(net_blend.parameters(), lr=args.lr)
 	scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_blend, T_max=args.num_iters, eta_min=args.lr*0.1)
@@ -131,7 +126,9 @@ def regular_train(args):
 
 		# this is for outerloop
 		for i,data in enumerate(Mydata):
-			imgL_b, imgR_b, imgtest_b, inter_val_b, index_b, all_maskL_b, all_maskR_b, disp_b, model_b = data
+
+			# _, _, imgtest_b, inter_val_b, index_b, _, _, disp_b, model_b = data
+			imgtest_b, inter_val_b, index_b, max_disp_b, min_disp_b,model_b = data
 			# imgL_b, imgR_b, imgtest_b, inter_val_b, index_b = data
 
 			mseloss = torch.tensor(0.).cuda()
@@ -143,18 +140,21 @@ def regular_train(args):
 				# --------------- fetch --------------------
 				imgtest = imgtest_b[task_id:task_id+1].to(device)
 				inter = inter_val_b[task_id:task_id+1]
-				imgL = imgL_b[task_id:task_id+1].to(device)
-				imgR = imgR_b[task_id:task_id+1].to(device)
-				index = index_b[task_id]
-				all_maskL = all_maskL_b[task_id].to(device)
-				all_maskR = all_maskR_b[task_id].to(device)
-				disp = disp_b[task_id].to(device)
+				# imgL = imgL_b[task_id:task_id+1].to(device)
+				# imgR = imgR_b[task_id:task_id+1].to(device)
+				# index = index_b[task_id]
+				# all_maskL = all_maskL_b[task_id].to(device)
+				# all_maskR = all_maskR_b[task_id].to(device)
+				max_disp = max_disp_b[task_id].item()
+				min_disp = min_disp_b[task_id].item()
 				model_path = model_b[task_id]
 
+				print("max_disp: ", max_disp, "min_disp: ", min_disp)
+
 				# compute offsets, baseline (scene-dependent)
-				disp = torch.abs(disp[:,:,0])
-				max_disp = torch.max(disp)
-				min_disp = torch.min(disp)
+				# disp = torch.abs(disp[:,:,0])
+				max_disp = 100#torch.max(disp)
+				min_disp = 10#torch.min(disp)
 				planes = torch.round(torch.linspace(min_disp, max_disp, args.num_planes+1)/2)*2
 				base_shift = int(max_disp//2)
 				offsets = [ int((planes[i]/2+planes[i+1]/2)//2) for i in range(args.num_planes)]
@@ -171,36 +171,48 @@ def regular_train(args):
 				meshy, meshx = torch.meshgrid((dy, dx))
 				
 				# load model
-				saved_dict = torch.load(model_path)
-				net_scene = net_scene_list[task_id]
-				net_scene.load_state_dict(saved_dict['mlp'])
+				# saved_dict = torch.load(model_path, map_location='cuda:0')
+				# if args.batch_size>1:
+				# 	net_scene = net_scene_list[task_id]
+				# net_scene.load_state_dict(saved_dict['mlp'])
 				# print("finsih loading network")
 
 				# inter = torch.from_numpy(inter)
 				z0 = net_scene.ret_z(torch.LongTensor([0.]).cuda()).squeeze()
 				z1 = net_scene.ret_z(torch.LongTensor([1.]).cuda()).squeeze()
-
 				zi = linterp(inter.to(device), z0, z1).unsqueeze(0)
 				out = net_scene.forward_with_z(grid_inp, zi)
-				out = out.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
+				out = out.reshape(1, h_res, -1, 3*args.num_planes if not args.add_mask else 4*args.num_planes).permute(0,3,1,2)
+
+				del zi,z0,z1
 
 				off_scl = np.interp(inter, xp, fp)
 				multi_out_list=[]
 				for i in range(args.num_planes):
 					meshxw = meshx + (base_shift * 2 + off_scl * offsets[i]) / (w_res + base_shift * 2)
 					grid = torch.stack((meshxw, meshy), 2)[None].to(device).to(torch.float32)
-					multi_out = grid_sample(out[:, 3*i:3*i+3], grid, mode='bilinear', align_corners=True)[:, :, :, :-base_shift*2]
-					multi_out_list.append(multi_out)
+					if args.add_mask:
+						multi_out_tmp = grid_sample(out[:, 4*i:4*i+4], grid, mode='bilinear', align_corners=True)[:, :, :, :-base_shift*2]
+						multi_out_list.append(multi_out_tmp)
+					else:
+						multi_out_tmp = grid_sample(out[:, 3*i:3*i+3], grid, mode='bilinear', align_corners=True)[:, :, :, :-base_shift*2]
+						multi_out_list.append(multi_out_tmp)
 
 				multi_out = torch.cat(multi_out_list,dim=1)
 				blend_out = net_blend(2*multi_out-1) # multi out [0,1]-->[-1,1]
 
 				if args.mask_blend:
 					for k in range(args.num_planes):
-						if k==0:
-							blend_test = blend_out[:,0:1]*multi_out[:,0:3]
+						if args.add_mask:
+							if k==0:
+								blend_test = blend_out[:,0:1]*multi_out[:,0:3]
+							else:
+								blend_test += blend_out[:,k:k+1]*multi_out[:,4*k:4*k+3]							
 						else:
-							blend_test += blend_out[:,k:k+1]*multi_out[:,3*k:3*k+3]
+							if k==0:
+								blend_test = blend_out[:,0:1]*multi_out[:,0:3]
+							else:
+								blend_test += blend_out[:,k:k+1]*multi_out[:,3*k:3*k+3]
 				else:
 					blend_test = blend_out
 
@@ -219,6 +231,10 @@ def regular_train(args):
 			blend_loss.backward()
 			optimizer_blend.step()
 
+			torch.cuda.empty_cache()
+
+			print("iter: ", iter, model_path, base_shift)
+
 			if (iter % args.progress_iter) ==0:
 
 				print(f"iterations: {iter}, interval: {inter}, blend_loss: {blend_loss}, mseloss: {mseloss}, vgloss: {vgloss}")
@@ -231,7 +247,12 @@ def regular_train(args):
 
 				# visualize layer
 				for i in range(args.num_planes):
-					saveimg(out[:, 3*i:3*i+3], f"{save_imgpath}/{iter}_out_{i}.png")
+					if args.add_mask:
+						saveimg(out[:, 4*i:4*i+3], f"{save_imgpath}/{iter}_out_{i}.png")
+						saveimg(out[:, 4*i+3:4*i+4].repeat(1,3,1,1), f"{save_imgpath}/{iter}_outmask_{i}.png")
+
+					else:
+						saveimg(out[:, 3*i:3*i+3], f"{save_imgpath}/{iter}_out_{i}.png")
 					if args.mask_blend:
 						saveimg(blend_out[:, i:i+1].repeat(1,3,1,1), f"{save_imgpath}/{iter}_mask_{i}.png")
 
@@ -265,6 +286,7 @@ if __name__=='__main__':
 	parser.add_argument('--n_layer',help='layer number of meta MLP',type=int,default = 5)
 	parser.add_argument('--max_disp',help='max_disp for shifring',type=int,default = 10)
 	parser.add_argument('--resolution',help='resolution [h,w]',nargs='+',type=int,default = [270, 480])
+	parser.add_argument('--add_mask',help='add mask for training',action='store_true')
 	parser.add_argument('--use_norm',help='use my network for debugging',action='store_true')
 	parser.add_argument('--use_sigmoid',help='add sigmoid to the end of CondSiren',action='store_true')
 	parser.add_argument('--load_one',help='load one scene only',action='store_true')

@@ -86,16 +86,16 @@ def regular_train(args):
 	if args.blend_type=="mlp":
 		net_blend = MLP_blend(D=args.mlp_d, in_feat=3*args.num_planes, out_feat=3, W=args.mlp_w, with_res=False, with_norm=args.use_norm).cuda()
 	elif args.blend_type=="unet":
-		net_blend = Unet_Blend(3*args.num_planes, args.num_planes if args.mask_blend else 3, 4, (h_res, w_res)).cuda()
+		net_blend = Unet_Blend(3*args.num_planes if not args.add_mask else 4*args.num_planes, args.num_planes if args.mask_blend else 3, 4, (h_res, w_res)).cuda()
 
 	
 	net_blend.load_state_dict(torch.load(save_modelpath+"/blend.ckpt")['nn_blend'])
 	print("finish loading netblending")
 
 	if args.use_viinter:
-		net_scene = VIINTER(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=True).cuda()
+		net_scene = VIINTER(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes if not args.add_mask else 4*args.num_planes, W=args.n_c, with_res=False, with_norm=True).cuda()
 	else:
-		net_scene = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
+		net_scene = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes if not args.add_mask else 4*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
 	
 	print("net_scene: ", net_scene)
 
@@ -173,15 +173,19 @@ def regular_train(args):
 
 				zi = linterp(inter, z0, z1).unsqueeze(0)
 				out = net_scene.forward_with_z(grid_inp, zi)
-				out = out.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
+				out = out.reshape(1, h_res, -1, 3*args.num_planes if not args.add_mask else 4*args.num_planes).permute(0,3,1,2)
 
 				off_scl = np.interp(inter, xp, fp)
 				multi_out_list=[]
 				for i in range(args.num_planes):
 					meshxw = meshx + (base_shift * 2 + off_scl * offsets[i]) / (w_res + base_shift * 2)
 					grid = torch.stack((meshxw, meshy), 2)[None].to(device).to(torch.float32)
-					multi_out = grid_sample(out[:, 3*i:3*i+3], grid, mode='bilinear', align_corners=True)[:, :, :, :-base_shift*2]
-					multi_out_list.append(multi_out)
+					if args.add_mask:
+						multi_out = grid_sample(out[:, 4*i:4*i+4], grid, mode='bilinear', align_corners=True)[:, :, :, :-base_shift*2]
+						multi_out_list.append(multi_out)
+					else:
+						multi_out = grid_sample(out[:, 3*i:3*i+3], grid, mode='bilinear', align_corners=True)[:, :, :, :-base_shift*2]
+						multi_out_list.append(multi_out)
 
 					# if index%10==0:
 						# saveimg(multi_out, f"{save_testpath}/{j}_{inter}_out{i}.png")
@@ -246,6 +250,7 @@ if __name__=='__main__':
 	parser.add_argument('--use_norm',help='use my network for debugging',action='store_true')
 	parser.add_argument('--use_sigmoid',help='add sigmoid to the end of CondSiren',action='store_true')
 	parser.add_argument('--load_one',help='load one scene only',action='store_true')
+	parser.add_argument('--add_mask',help='add mask output',action='store_true')
 	parser.add_argument('--reg_train',help='regular training, for debugging',action='store_true')
 	parser.add_argument('--use_viinter',help='use viinter network or not',action='store_true')
 	parser.add_argument('--mask_blend',help='use mask_blend',action='store_true')
