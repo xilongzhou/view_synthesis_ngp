@@ -101,19 +101,17 @@ def regular_train(args):
 	for i in range(args.num_planes):
 		# left
 		maskL_name = f"mask{i}_00000.png"
-		maskL = np.array(Image.open(join(args.datapath,maskL_name))).astype(float)
+		maskL = np.array(Image.open(join(args.datapath,maskL_name))).astype(np.float32)
 		maskL = torch.from_numpy(maskL)
 		# right
 		maskR_name = f"mask{i}_00011.png"
-		maskR = np.array(Image.open(join(args.datapath,maskR_name))).astype(float)
+		maskR = np.array(Image.open(join(args.datapath,maskR_name))).astype(np.float32)
 		maskR = torch.from_numpy(maskR)
 		print("maskR: ",maskR)
 		all_maskL.append(maskL)		
 		all_maskR.append(maskR)		
 	all_maskL = torch.stack(all_maskL)
 	all_maskR = torch.stack(all_maskR)
-
-
 
 	########### load disparity
 	disp = np.load(os.path.join(args.datapath,"disp_0_11.npy"))
@@ -185,25 +183,20 @@ def regular_train(args):
 	if args.w_vgg>0:
 		metric_vgg = VGGLoss()
 
-	mseloss = 0
-	vgloss = 0
-	blend_loss = 0
-	inter_loss = 0
-
 	xp = [0, 1]
 	fp = [-2, 2]
 
 	iter = 0
 	shuffle = True
 
+	rgb_loss = 0
+	mask_loss = 0
+
 	while iter < args.num_iters:
 
 		rand_id = random.choice(all_ids) 
 		inter = inter_list[rand_id]
 
-		mseloss = torch.tensor(0.).cuda()
-		vgloss = torch.tensor(0.).cuda()
-		scene_loss = torch.tensor(0.).cuda()
 
 		# ----------- shuffle ------------------------
 		flag = random.choice([True, False])
@@ -219,13 +212,15 @@ def regular_train(args):
 				if args.add_mask:
 					mask_imgL = imgL*all_maskL[i]
 					out_L_shift = out_L[:, 4*i:4*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
-					scene_loss = scene_loss + metric_mse(mask_imgL, out_L_shift*all_maskL[i])
+					rgb_loss = metric_mse(mask_imgL, out_L_shift*all_maskL[i])
 					mask_L_shift = out_L[:, 4*i+3:4*i+4, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
-					scene_loss = scene_loss + metric_mse(mask_L_shift, all_maskL[i])
+					mask_loss = metric_mse(mask_L_shift, all_maskL[i])
+
+					scene_loss = rgb_loss + mask_loss
 				else:
 					mask_imgL = imgL*all_maskL[i]
 					out_L_shift = out_L[:, 3*i:3*i+3, :, base_shift - offsets[i]:base_shift + w_res - offsets[i]]
-					scene_loss = scene_loss + metric_mse(mask_imgL, out_L_shift*all_maskL[i])
+					scene_loss = metric_mse(mask_imgL, out_L_shift*all_maskL[i])
 
 		else:
 			out_R = net_scene(grid_inp, R_tag)
@@ -236,13 +231,16 @@ def regular_train(args):
 				if args.add_mask:
 					mask_imgR = imgR*all_maskR[i]
 					out_R_shift = out_R[:, 4*i:4*i+3, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]]
-					scene_loss = scene_loss + metric_mse(mask_imgR, out_R_shift*all_maskR[i])
+					rgb_loss = metric_mse(mask_imgR, out_R_shift*all_maskR[i])
 					mask_R_shift = out_R[:, 4*i+3:4*i+4, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]]
-					scene_loss = scene_loss + metric_mse(mask_R_shift, all_maskR[i])
+					mask_loss = metric_mse(mask_R_shift, all_maskR[i])
+					
+					scene_loss = rgb_loss + mask_loss
+
 				else:
 					mask_imgR = imgR*all_maskR[i]
 					out_R_shift = out_R[:, 3*i:3*i+3, :, base_shift + offsets[i]:base_shift + w_res + offsets[i]]
-					scene_loss = scene_loss + metric_mse(mask_imgR, out_R_shift*all_maskR[i])
+					scene_loss = metric_mse(mask_imgR, out_R_shift*all_maskR[i])
 
 			# ----------- end of shuffle ------------------------
 			
@@ -254,7 +252,7 @@ def regular_train(args):
 
 		if (iter % args.progress_iter) ==0:
 
-			print(f"iterations: {iter}, interval: {inter}, blend_loss: {blend_loss}, mseloss: {mseloss}, vgloss: {vgloss}, scene_loss: {scene_loss}, inter_loss: {inter_loss}")
+			print(f"iterations: {iter}, interval: {inter}, rgb_loss: {rgb_loss}, mask_loss: {mask_loss}, scene_loss: {scene_loss}")
 			print(f"offset: {offsets}, base_shift: {base_shift}, planes: {planes},")
 
 			save_dict = { 

@@ -149,12 +149,12 @@ def regular_train(args):
 				min_disp = min_disp_b[task_id].item()
 				model_path = model_b[task_id]
 
-				print("max_disp: ", max_disp, "min_disp: ", min_disp)
+				# print("max_disp: ", max_disp, "min_disp: ", min_disp)
 
 				# compute offsets, baseline (scene-dependent)
 				# disp = torch.abs(disp[:,:,0])
-				max_disp = 100#torch.max(disp)
-				min_disp = 10#torch.min(disp)
+				# max_disp = torch.max(disp)
+				# min_disp = torch.min(disp)
 				planes = torch.round(torch.linspace(min_disp, max_disp, args.num_planes+1)/2)*2
 				base_shift = int(max_disp//2)
 				offsets = [ int((planes[i]/2+planes[i+1]/2)//2) for i in range(args.num_planes)]
@@ -171,10 +171,10 @@ def regular_train(args):
 				meshy, meshx = torch.meshgrid((dy, dx))
 				
 				# load model
-				# saved_dict = torch.load(model_path, map_location='cuda:0')
-				# if args.batch_size>1:
-				# 	net_scene = net_scene_list[task_id]
-				# net_scene.load_state_dict(saved_dict['mlp'])
+				saved_dict = torch.load(model_path, map_location='cuda:0')
+				if args.batch_size>1:
+					net_scene = net_scene_list[task_id]
+				net_scene.load_state_dict(saved_dict['mlp'])
 				# print("finsih loading network")
 
 				# inter = torch.from_numpy(inter)
@@ -199,6 +199,7 @@ def regular_train(args):
 						multi_out_list.append(multi_out_tmp)
 
 				multi_out = torch.cat(multi_out_list,dim=1)
+				
 				blend_out = net_blend(2*multi_out-1) # multi out [0,1]-->[-1,1]
 
 				if args.mask_blend:
@@ -233,7 +234,7 @@ def regular_train(args):
 
 			torch.cuda.empty_cache()
 
-			print("iter: ", iter, model_path, base_shift)
+			# print("iter: ", iter, model_path, base_shift)
 
 			if (iter % args.progress_iter) ==0:
 

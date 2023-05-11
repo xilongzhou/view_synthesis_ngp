@@ -187,6 +187,46 @@ class DataLoader_helper2(data.Dataset):
 		return self.total_length
 
 
+# load mask and all images
+class DataLoader_helper_test(data.Dataset):
+	"""docstring for  DataLoader_helper"""
+	def __init__(self, path, h_res, w_res, num=12, plane=6, one_scene=True):
+		super( DataLoader_helper_test, self).__init__()
+		self.path = path
+		self.h_res = h_res
+		self.w_res = w_res
+		self.num = num
+		self.plane = plane
+
+		self.scene = path
+		self.total_length = 1
+
+		print("length of data ", self.total_length)
+
+		# id of left and right stereo input
+		self.all_ids = [i for i in range(self.num)]
+		print("self.all_ids: ", self.all_ids)
+		self.L_id = 0
+		self.R_id = 11
+		print("self.all_ids: ", self.all_ids)
+
+		# compute interpolated
+		dist = 1/(self.R_id - self.L_id)
+		self.inter_list = [np.float32(i*dist) for i in range(self.R_id - self.L_id+1)]
+		print("self.inter_list: ", self.inter_list)
+
+	def __getitem__(self, index):
+
+		# load disparity
+		disparity_0_11 = np.load(os.path.join(self.scene, "disp_0_11.npy"))
+
+		return  disparity_0_11
+
+	def __len__(self):
+		return self.total_length
+
+
+
 
 # load mask and all images
 # class DataLoader_helper_blend(data.Dataset):
@@ -325,9 +365,13 @@ class DataLoader_helper_blend(data.Dataset):
 
 		# load disparity
 		disparity_0_11 = np.load(os.path.join(path, "disp_0_11.npy"))
+		# print("disparity_0_11: ", disparity_0_11.shape)
+
 		disparity_0_11 = np.absolute(disparity_0_11[:,:,0])
 		disp_max = np.amax(disparity_0_11)
 		disp_min = np.amin(disparity_0_11)
+
+		# print(path, " disp_max: ", disp_max)
 
 		# interpolated val
 		inter_val = self.inter_list[rand_id]
@@ -346,10 +390,10 @@ class DataLoader_helper_blend(data.Dataset):
 
 
 
-class DataLoader_helper_test(data.Dataset):
+class DataLoader_helper_test2(data.Dataset):
 	"""docstring for  DataLoader_helper"""
 	def __init__(self, path, h_res, w_res):
-		super( DataLoader_helper_test, self).__init__()
+		super( DataLoader_helper_test2, self).__init__()
 		self.path = path
 		self.h_res = h_res
 		self.w_res = w_res

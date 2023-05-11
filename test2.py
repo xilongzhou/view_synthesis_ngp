@@ -11,6 +11,7 @@ import numpy as np
 import cv2,os,time
 from tqdm import tqdm
 
+import imageio
 
 from models.xfields import XfieldsFlow
 from util.args import TrainingArguments
@@ -21,7 +22,7 @@ from PIL import Image
 
 from utils import VGGLoss, VGGpreprocess, saveimg
 
-from network import VIINTER, linterp, Unet_Blend, MLP_blend, CondSIREN, CondSIREN_meta
+from network import VIINTER, linterp, Unet_Blend, MLP_blend, CondSIREN
 import torch.nn.functional as F
 
 import random
@@ -29,7 +30,7 @@ import random
 # from torchmeta.utils.gradient_based import gradient_update_parameters
 from collections import OrderedDict
 
-from my_dataloader import DataLoader_helper, DataLoader_helper2
+from my_dataloader import DataLoader_helper, DataLoader_helper2, DataLoader_helper_test
 
 from torch.nn.functional import interpolate, grid_sample
 
@@ -56,20 +57,23 @@ def regular_train(args):
 
 	device = "cuda"
 
-	save_imgpath = os.path.join(args.savepath, "imgs")
+	idx = args.savepath.split("/")[-1]
+	print("idx: ", idx)
+
+	# save_imgpath = os.path.join(args.savepath, "imgs")
 	save_testpath = os.path.join(args.savepath, "test")
 	save_modelpath = os.path.join(args.savepath, "ckpt")
 
-	if not os.path.exists(save_imgpath):
-		os.makedirs(save_imgpath)
+	# if not os.path.exists(save_imgpath):
+	# 	os.makedirs(save_imgpath)
 
 	if not os.path.exists(save_testpath):
-
 		os.makedirs(save_testpath)
+
 	print("save_testpath: ", save_testpath)
 
-	if not os.path.exists(save_modelpath):
-		os.makedirs(save_modelpath)
+	# if not os.path.exists(save_modelpath):
+	# 	os.makedirs(save_modelpath)
 
 	h_res = args.resolution[0]
 	w_res = args.resolution[1]
@@ -78,12 +82,9 @@ def regular_train(args):
 
 	# # ---------------------- Dataloader ----------------------
 	# Myset = DataLoader_helper(args.datapath, h_res, w_res)
-	Myset = DataLoader_helper2(args.datapath, h_res, w_res, one_scene=args.load_one)
+	Myset = DataLoader_helper_test(os.path.join(args.datapath, idx), h_res, w_res)
 	Mydata = DataLoader(dataset=Myset, batch_size=args.batch_size, shuffle=True, drop_last=True)
 
-	total_data = Myset.get_total_num()
-
-	print(f"length of data is {total_data}")
 
 	# ----------------------- define network --------------------------------------
 
@@ -94,12 +95,12 @@ def regular_train(args):
 	if args.use_viinter:
 		net_scene = VIINTER(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=True).cuda()
 	else:
-		net_scene = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
+		net_scene = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes if not args.add_mask else 4*args.num_planes, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
 	
-	# load network
-	saved_dict = torch.load("%s/model.ckpt"%(save_modelpath))
-	net_scene.load_state_dict(saved_dict['mlp'])
 
+	# load network
+	saved_dict = torch.load("%s/model.ckpt"%(save_modelpath), map_location='cuda:0')
+	net_scene.load_state_dict(saved_dict['mlp'])
 
 	print("finish loading net_scene: ", net_scene)
 
@@ -109,24 +110,25 @@ def regular_train(args):
 	dist = 1/11
 	inter_list = [np.float32(i*dist) for i in range(12)]
 
+	if args.add_mask:
+		video_dict = {}
+		for l in range(args.num_planes):
+			print("................", l)
+			video_dict[f"layer_{l}"] = imageio.get_writer(os.path.join(save_testpath, f"layer{l}.mp4"), mode='I', fps=6, codec='libx264')
+			video_dict[f"mask_{l}"] = imageio.get_writer(os.path.join(save_testpath, f"mask{l}.mp4"), mode='I', fps=6, codec='libx264')
+
+	else:
+		video_dict = {}
+		for l in range(args.num_planes):
+			print("................", l)
+			video_dict[f"layer_{l}"] = imageio.get_writer(os.path.join(save_testpath, f"layer{l}.mp4"), mode='I', fps=6, codec='libx264')
+			# video_dict[f"mask_{l}"] = imageio.get_writer(os.path.join(save_testpath, f"mask{l}.mp4"), mode='I', fps=6, codec='libx264')
+
 	# this is for outerloop
 	for i,data in enumerate(Mydata):
-		imgL_b, imgR_b, imgtest_b, inter_val_b, index_b, all_maskL_b, all_maskR_b, disp_b = data
-		# imgL_b, imgR_b, imgtest_b, inter_val_b, index_b = data
-
-		mseloss = torch.tensor(0.).cuda()
-		vgloss = torch.tensor(0.).cuda()
-		scene_loss = torch.tensor(0.).cuda()
-
+		disp_b = data
 
 		# --------------- fetch --------------------
-		imgtest = imgtest_b[0:1].to(device)
-		inter = inter_val_b[0:1]
-		imgL = imgL_b[0:1].to(device)
-		imgR = imgR_b[0:1].to(device)
-		index = index_b[0]
-		all_maskL = all_maskL_b[0].to(device)
-		all_maskR = all_maskR_b[0].to(device)
 		disp = disp_b[0].to(device)
 
 		# compute offsets, baseline (scene-dependent)
@@ -136,8 +138,9 @@ def regular_train(args):
 		planes = torch.round(torch.linspace(min_disp, max_disp, args.num_planes+1)/2)*2
 		base_shift = int(max_disp//2)
 		offsets = [ int((planes[i]/2+planes[i+1]/2)//2) for i in range(args.num_planes)]
+		print("max_disp: ", max_disp, "min_disp: ", min_disp)
 
-		# print(f"offsets: {offsets}, baseshift: {base_shift}")
+		print(f"baseshift: {base_shift}")
 
 		coords_h = np.linspace(-1, 1, h_res, endpoint=False)
 		coords_w = np.linspace(-1, 1,  w_res + base_shift * 2, endpoint=False)
@@ -164,11 +167,31 @@ def regular_train(args):
 
 			zi = linterp(inter, z0, z1).unsqueeze(0)
 			out = net_scene.forward_with_z(grid_inp, zi)
-			out = out.reshape(1, h_res, -1, 3*args.num_planes).permute(0,3,1,2)
+			out = out.reshape(1, h_res, -1, 3*args.num_planes if not args.add_mask else 4*args.num_planes).permute(0,3,1,2)
 
 			# visualize layer
-			for i in range(args.num_planes):
-				saveimg(out[:, 3*i:3*i+3], f"{save_testpath}/{inter}_out_{i}.png")
+			if args.add_mask:
+				for i in range(args.num_planes):
+
+					tt = (out[:, 4*i:4*i+3].permute(0, 2, 3, 1) * 255).clamp(0, 255).to(torch.uint8).squeeze(0)
+					tt = tt.detach().cpu().numpy()
+					video_dict[f"layer_{i}"].append_data(tt)
+
+
+					tt = (out[:, 4*i+3:4*i+4].repeat(1,3,1,1).permute(0, 2, 3, 1) * 255).clamp(0, 255).to(torch.uint8).squeeze(0)
+					tt = tt.detach().cpu().numpy()
+					video_dict[f"mask_{i}"].append_data(tt)
+
+			else:
+				for i in range(args.num_planes):
+
+					tt = (out[:, 3*i:3*i+3].permute(0, 2, 3, 1) * 255).clamp(0, 255).to(torch.uint8).squeeze(0)
+					tt = tt.detach().cpu().numpy()
+					video_dict[f"layer_{i}"].append_data(tt)
+
+
+				# for i in range(args.num_planes):
+				# 	saveimg(out[:, 3*i:3*i+3], f"{save_testpath}/{inter}_out_{i}.png")
 
 		break
 
@@ -206,6 +229,7 @@ if __name__=='__main__':
 	parser.add_argument('--no_inter_cons',help='no using outer loss, inner only',action='store_true')
 	parser.add_argument('--no_multi_cons',help='no using outer loss, inner only',action='store_true')
 	parser.add_argument('--reg_train',help='regular training, for debugging',action='store_true')
+	parser.add_argument('--add_mask',help='regular training, for debugging',action='store_true')
 	parser.add_argument('--use_viinter',help='use viinter network or not',action='store_true')
 	parser.add_argument('--no_blend',help='no blend network',action='store_true')
 	parser.add_argument('--n_c',help='number of channel in netMet',type=int,default = 256)

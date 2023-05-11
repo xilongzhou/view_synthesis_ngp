@@ -153,7 +153,7 @@ def regular_train(args):
 			meshy, meshx = torch.meshgrid((dy, dx))
 			
 			# load model
-			saved_dict = torch.load(model_path)
+			saved_dict = torch.load(model_path, map_location='cuda:0')
 			net_scene.load_state_dict(saved_dict['mlp'])
 			# print("finsih loading network")
 

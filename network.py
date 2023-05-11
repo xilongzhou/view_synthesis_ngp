@@ -6,7 +6,7 @@ import numpy as np
 
 import torch.nn as nn
 
-
+from torchmeta.modules import MetaModule, MetaSequential, MetaConv2d, MetaBatchNorm2d, MetaLinear, MetaLayerNorm, MetaEmbedding
 from collections import OrderedDict
 
 import sys
@@ -280,7 +280,8 @@ class MLP_blend(nn.Module):
 
         return rgb*0.5 + 0.5 # [-1,1] --> [0,1]
 
-
+### --------------- for hypernetwork
+import 
 
 
 if __name__=="__main__":
