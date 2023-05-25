@@ -30,7 +30,7 @@ import random
 # from torchmeta.utils.gradient_based import gradient_update_parameters
 from collections import OrderedDict
 
-from my_dataloader import DataLoader_helper, DataLoader_helper2
+from my_dataloader import DataLoader_helper_blend_test
 
 from torch.nn.functional import interpolate, grid_sample
 
@@ -73,7 +73,7 @@ def regular_train(args):
 
 	# # ---------------------- Dataloader ----------------------
 	# Myset = DataLoader_helper(args.datapath, h_res, w_res)
-	Myset = DataLoader_helper2(args.datapath, h_res, w_res, one_scene=args.load_one, load_model=True)
+	Myset = DataLoader_helper_blend_test(args.datapath, h_res, w_res)
 	Mydata = DataLoader(dataset=Myset, batch_size=args.batch_size, shuffle=True, drop_last=True)
 
 	total_data = Myset.get_total_num()
@@ -111,29 +111,18 @@ def regular_train(args):
 
 		# this is for outerloop
 		for j,data in enumerate(Mydata):
-			imgL_b, imgR_b, imgtest_b, inter_val_b, index_b, all_maskL_b, all_maskR_b, disp_b, model_b = data
+			max_disp_b, min_disp_b, model_b = data
 			# imgL_b, imgR_b, imgtest_b, inter_val_b, index_b = data
 
-			mseloss = torch.tensor(0.).cuda()
-			vgloss = torch.tensor(0.).cuda()
-			scene_loss = torch.tensor(0.).cuda()
 
 
 			# --------------- fetch --------------------
-			imgtest = imgtest_b[0:1].to(device)
-			inter = inter_val_b[0:1]
-			imgL = imgL_b[0:1].to(device)
-			imgR = imgR_b[0:1].to(device)
-			index = index_b[0]
-			all_maskL = all_maskL_b[0].to(device)
-			all_maskR = all_maskR_b[0].to(device)
-			disp = disp_b[0].to(device)
+			max_disp = max_disp_b[0].item()
+			min_disp = min_disp_b[0].item()
 			model_path = model_b[0]
 
 			# compute offsets, baseline (scene-dependent)
-			disp = torch.abs(disp[:,:,0])
-			max_disp = torch.max(disp)
-			min_disp = torch.min(disp)
+
 			planes = torch.round(torch.linspace(min_disp, max_disp, args.num_planes+1)/2)*2
 			base_shift = int(max_disp//2)
 			offsets = [ int((planes[i]/2+planes[i+1]/2)//2) for i in range(args.num_planes)]
@@ -200,10 +189,16 @@ def regular_train(args):
 
 				if args.mask_blend:
 					for k in range(args.num_planes):
-						if k==0:
-							blend_test = blend_out[:,0:1]*multi_out[:,0:3]
+						if args.add_mask:
+							if k==0:
+								blend_test = blend_out[:,0:1]*multi_out[:,0:3]
+							else:
+								blend_test += blend_out[:,k:k+1]*multi_out[:,4*k:4*k+3]							
 						else:
-							blend_test += blend_out[:,k:k+1]*multi_out[:,3*k:3*k+3]
+							if k==0:
+								blend_test = blend_out[:,0:1]*multi_out[:,0:3]
+							else:
+								blend_test += blend_out[:,k:k+1]*multi_out[:,3*k:3*k+3]
 				else:
 					blend_test = blend_out
 

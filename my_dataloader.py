@@ -388,6 +388,43 @@ class DataLoader_helper_blend(data.Dataset):
 		return self.total_length
 
 
+class DataLoader_helper_blend_test(data.Dataset):
+	"""docstring for  DataLoader_helper_blend_test"""
+	def __init__(self, path, h_res, w_res, num=12, plane=6):
+		super( DataLoader_helper_blend_test, self).__init__()
+		self.path = path
+		self.h_res = h_res
+		self.w_res = w_res
+		self.plane = plane
+
+		self.all_scenes = os.listdir(path)
+		self.total_length = len(self.all_scenes)
+
+	def __getitem__(self, index):
+
+		path = join(self.path, self.all_scenes[index])
+
+		# load disparity
+		disparity_0_11 = np.load(os.path.join(path, "disp_0_11.npy"))
+		# print("disparity_0_11: ", disparity_0_11.shape)
+
+		disparity_0_11 = np.absolute(disparity_0_11[:,:,0])
+		disp_max = np.amax(disparity_0_11)
+		disp_min = np.amin(disparity_0_11)
+
+		# load model
+		model_path = join(path, "model.ckpt")
+
+		return  disp_max, disp_min, model_path
+
+
+	def __len__(self):
+		return self.total_length
+
+	def get_total_num(self):
+		return self.total_length
+
+
 
 
 class DataLoader_helper_test2(data.Dataset):

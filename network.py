@@ -6,7 +6,6 @@ import numpy as np
 
 import torch.nn as nn
 
-from torchmeta.modules import MetaModule, MetaSequential, MetaConv2d, MetaBatchNorm2d, MetaLinear, MetaLayerNorm, MetaEmbedding
 from collections import OrderedDict
 
 import sys
@@ -280,9 +279,8 @@ class MLP_blend(nn.Module):
 
         return rgb*0.5 + 0.5 # [-1,1] --> [0,1]
 
-### --------------- for hypernetwork
-import 
 
+			
 
 if __name__=="__main__":
 
@@ -292,7 +290,7 @@ if __name__=="__main__":
 
     L_tag = torch.tensor([0]).cuda()
 
-    net = CondSIREN_meta(n_emb = 2, norm_p = 1, inter_fn=linterp, D=5, z_dim = 128, in_feat=2, out_feat=3*3, W=256, with_res=False, with_norm=True).cuda()
+    net = CondSIREN_meta(D=5, in_feat=2, out_feat=3*3, W=256, with_res=False, with_norm=True).cuda()
     # net = MySirenNet(2, 256, 3, 5, w0_initial=200., w0=200., final_activation=lambda x: x + .5).cuda()
     # net = ConSirenNet(2, 256, 3, 5, w0_initial=200., w0=200.,final_activation=lambda x: x + .5, cond_type='unet', test=True, N_in=1, n_layer_unet=4).cuda()
 
