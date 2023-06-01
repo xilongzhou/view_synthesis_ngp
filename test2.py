@@ -88,10 +88,6 @@ def regular_train(args):
 
 	# ----------------------- define network --------------------------------------
 
-	# common net
-	if not args.no_blend:
-		net_blend = MLP_blend(D=args.mlp_d, in_feat=3*args.num_planes, out_feat=3, W=args.mlp_w, with_res=False, with_norm=args.use_norm).cuda()
-
 	if args.use_viinter:
 		net_scene = VIINTER(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=3*args.num_planes, W=args.n_c, with_res=False, with_norm=True).cuda()
 	else:
@@ -524,6 +520,177 @@ def separate_train(args):
 
 
 
+def blend(args):
+
+	device = "cuda"
+
+	idx = args.savepath.split("/")[-1]
+	print("idx: ", idx)
+
+	# save_imgpath = os.path.join(args.savepath, "imgs")
+	save_testpath = os.path.join(args.savepath, f"blend")
+
+	if not os.path.exists(save_testpath):
+		os.makedirs(save_testpath)
+
+	print("save_testpath: ", save_testpath)
+
+	# if not os.path.exists(save_modelpath):
+	# 	os.makedirs(save_modelpath)
+
+	h_res = args.resolution[0]
+	w_res = args.resolution[1]
+	L_tag = torch.tensor([0]).cuda()
+	R_tag = torch.tensor([1]).cuda()
+
+	# # ---------------------- Dataloader ----------------------
+	# Myset = DataLoader_helper(args.datapath, h_res, w_res)
+	Myset = DataLoader_helper_test(os.path.join(args.datapath, idx), h_res, w_res)
+	Mydata = DataLoader(dataset=Myset, batch_size=1, shuffle=True, drop_last=True)
+
+	with torch.no_grad():
+		# ----------------------- define network --------------------------------------
+		net_list = []
+		for k in range(6):
+
+			net_scene = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=4, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
+			net_list.append(net_scene)
+
+			save_modelpath = os.path.join(args.savepath, f"ckpt{k}")
+
+			# load network
+			saved_dict = torch.load("%s/model.ckpt"%(save_modelpath), map_location='cuda:0')
+			net_list[k].load_state_dict(saved_dict['mlp'])
+
+			print("finish loading net_scene: ", k)
+
+		# ----------------------- blending --------------------------------------
+
+		xp = [0, 1]
+		fp = [-2, 2]
+
+		dist = 1/20
+		inter_list = [np.float32(i*dist) for i in range(21)]
+		# inter_list = [0]
+
+		video = imageio.get_writer(os.path.join(save_testpath, f"video.mp4"), mode='I', fps=6, codec='libx264')
+		# video_dict = {}
+		# video_dict[f"layer_shift"] = imageio.get_writer(os.path.join(save_testpath, f"layer_shift.mp4"), mode='I', fps=6, codec='libx264')
+		# video_dict[f"layer_shift"] = imageio.get_writer(os.path.join(save_testpath, f"layer_shift.mp4"), mode='I', fps=6, codec='libx264')
+		# video_dict[f"mask_shift"] = imageio.get_writer(os.path.join(save_testpath, f"mask_shift.mp4"), mode='I', fps=6, codec='libx264')
+
+		# this is for outerloop
+		for i,data in enumerate(Mydata):
+			disp_b = data
+
+			# --------------- fetch --------------------
+			disp = disp_b[0].to(device)
+
+			# compute offsets, baseline (scene-dependent)
+			disp = torch.abs(disp[:,:,0])
+			max_disp = torch.max(disp)
+			min_disp = torch.min(disp)
+			planes = torch.round(torch.linspace(min_disp, max_disp, args.num_planes+1)/2)*2
+			base_shift = int(max_disp//2)
+			offsets = [ int((planes[i]/2+planes[i+1]/2)//2) for i in range(args.num_planes)]
+			print("max_disp: ", max_disp, "min_disp: ", min_disp)
+
+			print(f"baseshift: {base_shift}")
+
+			coords_h = np.linspace(-1, 1, h_res, endpoint=False)
+			coords_w = np.linspace(-1, 1,  w_res + base_shift * 2, endpoint=False)
+			# coords_w = np.linspace(-1, 1,  w_res, endpoint=False)
+			xy_grid = np.stack(np.meshgrid(coords_w, coords_h), -1)
+			xy_grid = torch.FloatTensor(xy_grid).cuda()
+			# if not args.rowbatch:
+			grid_inp = xy_grid.view(-1, 2).contiguous().unsqueeze(0)
+
+			dx = torch.from_numpy(coords_w).float()
+			dy = torch.from_numpy(coords_h).float()
+			meshy, meshx = torch.meshgrid((dy, dx))
+
+
+			# --------------- end fetch ------------------
+
+			for inter in inter_list:
+				print("inter: ", inter)
+
+				rgb_list = []
+				mask_list = []
+
+				for n_l in range(6):
+					net_scene = net_list[n_l]
+					# inter = torch.from_numpy(inter)
+					z0 = net_scene.ret_z(torch.LongTensor([0.]).cuda()).squeeze()
+					z1 = net_scene.ret_z(torch.LongTensor([1.]).cuda()).squeeze()
+
+					zi = linterp(inter, z0, z1).unsqueeze(0)
+					out = net_scene.forward_with_z(grid_inp, zi)
+					out = out.reshape(1, h_res, -1, 4).permute(0,3,1,2)
+					off_scl = np.interp(inter, xp, fp)
+
+					meshxw = meshx + (base_shift * 2 + off_scl * offsets[n_l]) / (w_res + base_shift * 2)
+					grid = torch.stack((meshxw, meshy), 2)[None].to(device).to(torch.float32)
+					out_shift = grid_sample(out, grid, mode='bilinear', align_corners=True)[:, :, :, :-base_shift*2]
+
+					rgb_list.append(out_shift[:, :3].permute(0, 2, 3, 1).squeeze(0).clamp(0, 1))
+					mask = out_shift[:, 3:4].permute(0, 2, 3, 1).squeeze(0).repeat(1,1,3).clamp(0, 1)
+
+					mask[mask<=0.1] = 0
+					mask[mask>=0.9] = 1
+
+					mask_list.append(mask)
+
+				for n_l in reversed(range(6)):
+
+					print(n_l)
+					rgb = rgb_list[n_l]
+					mask = mask_list[n_l]
+
+					if n_l!=5:
+						mask_final = mask*(1-remainder_mask)
+						remainder_mask = torch.logical_or(mask_final, remainder_mask).float()
+					else:
+						remainder_mask = mask
+						mask_final = mask
+
+					if n_l==5:
+						final = mask_final*rgb
+					else:
+						final += mask_final*rgb
+
+
+					# remainder_mask_vis = (remainder_mask*255).clamp(0, 255).to(torch.uint8)
+					# save_path = os.path.join(save_testpath,f"{n_l}_remainder_mask.png")
+					# Image.fromarray(remainder_mask_vis.cpu().numpy()).save(save_path)
+
+
+
+					mask_vis = (mask*255).clamp(0, 255).to(torch.uint8)
+					save_path = os.path.join(save_testpath,f"{n_l}_mask1.png")
+					Image.fromarray(mask_vis.cpu().numpy()).save(save_path)
+
+					mask_vis = (mask_final*255).clamp(0, 255).to(torch.uint8)
+					save_path = os.path.join(save_testpath,f"{n_l}_mask.png")
+					Image.fromarray(mask_vis.cpu().numpy()).save(save_path)
+
+					rgb_vis = (rgb*255).clamp(0, 255).to(torch.uint8)
+					save_path = os.path.join(save_testpath,f"{n_l}_rgb.png")
+					Image.fromarray(rgb_vis.cpu().numpy()).save(save_path)
+			
+					final_vis = (final*255).clamp(0, 255).to(torch.uint8)
+					save_path = os.path.join(save_testpath,f"{n_l}_final.png")
+					Image.fromarray(final_vis.cpu().numpy()).save(save_path)
+
+				# tt_shift = (out_shift[:, 3:4].repeat(1,3,1,1).permute(0, 2, 3, 1) * 255).clamp(0, 255).to(torch.uint8).squeeze(0)
+				final_vis = final_vis.detach().cpu().numpy()
+				video.append_data(final_vis)
+
+			# break
+
+			# 	rgb = ( * 255).clamp(0, 255).to(torch.uint8).squeeze(0)
+
+
 
 	
 if __name__=='__main__':
@@ -559,11 +726,12 @@ if __name__=='__main__':
 	parser.add_argument('--hypernet',help='use viinter network or not',action='store_true')
 	parser.add_argument('--mask_only',help='use viinter network or not',action='store_true')
 	parser.add_argument('--debug',help='use viinter network or not',action='store_true')
-	parser.add_argument('--no_blend',help='no blend network',action='store_true')
 	parser.add_argument('--n_c',help='number of channel in netMet',type=int,default = 256)
 	parser.add_argument('--separate_layer',help='seperate layers',type=int,default = -1)
 	parser.add_argument('--batch_size',help='batch size ',type=int,default = 2)
 	parser.add_argument('--datapath',help='the path of training dataset',type=str,default="../../Dataset/SynData_s1_all")
+	parser.add_argument('--blend',help='blending test',action='store_true')
+
 	args = parser.parse_args()
 
 
@@ -574,10 +742,14 @@ if __name__=='__main__':
 		os.makedirs(args.savepath)
 
 
-	if args.hypernet:
-		hyper_test(args)
+	if args.blend:
+		blend(args)
 	else:
-		if args.separate_layer>=0:
-			separate_train(args)
+
+		if args.hypernet:
+			hyper_test(args)
 		else:
-			regular_train(args)
+			if args.separate_layer>=0:
+				separate_train(args)
+			else:
+				regular_train(args)
