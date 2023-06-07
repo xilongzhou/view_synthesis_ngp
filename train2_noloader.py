@@ -471,10 +471,11 @@ def separate_train(args):
 
 
 	# compute offsets, baseline (scene-dependent)
+	epsilon=1e-2
 	disp = torch.abs(disp[:,:,0])
 	max_disp = torch.max(disp)
 	min_disp = torch.min(disp)
-	planes = torch.round(torch.linspace(min_disp, max_disp, args.num_planes+1)/2)*2
+	planes = torch.round(torch.linspace(min_disp-epsilon, max_disp++epsilon, args.num_planes+1)/2)*2
 	base_shift = int(max_disp//2)
 	offsets = [ int((planes[i]/2+planes[i+1]/2)//2) for i in range(args.num_planes)]
 
@@ -548,7 +549,7 @@ def separate_train(args):
 				if args.w_vgg>0:
 					if args.recon_vg:
 						recon_out_vg = imgL*(1-maskL) + out_L_shift*(maskL)
-						recon_gt_vg = imgL
+						recon_gt_vg = imgL*(1-maskL) + mask_imgL*(maskL)
 
 						gt_vg = VGGpreprocess(recon_gt_vg)
 						out_vg = VGGpreprocess(recon_out_vg)
@@ -583,7 +584,7 @@ def separate_train(args):
 				if args.w_vgg>0:
 					if args.recon_vg:
 						recon_out_vg = imgR*(1-maskR) + out_R_shift*maskR
-						recon_gt_vg = imgR
+						recon_gt_vg = imgR*(1-maskR) + mask_imgR*maskR
 						gt_vg = VGGpreprocess(recon_gt_vg)
 						out_vg = VGGpreprocess(recon_out_vg)
 						vgloss = metric_vgg(gt_vg, out_vg) * args.w_vgg
@@ -975,7 +976,7 @@ if __name__=='__main__':
 	parser.add_argument('--nfg',type=int,help='capacity multiplier',default = 8)
 	parser.add_argument('--num_planes',type=int,help='number of planes',default = 6)
 	parser.add_argument('--num_freqs_pe', type=int,help='#frequencies for positional encoding',default = 5)
-	parser.add_argument('--num_iters',type=int,help='num of iterations',default = 500000)
+	parser.add_argument('--num_iters',type=int,help='num of iterations',default = 250000)
 	parser.add_argument('--progress_iter',type=int,help='update frequency',default = 50000)
 	parser.add_argument('--lr',type=float,help='learning rate',default = 1e-4)
 	parser.add_argument('--savepath',type=str,help='saving path',default = 'resultsTest1')
