@@ -475,7 +475,7 @@ def separate_train(args):
 	disp = torch.abs(disp[:,:,0])
 	max_disp = torch.max(disp)
 	min_disp = torch.min(disp)
-	planes = torch.round(torch.linspace(min_disp-epsilon, max_disp++epsilon, args.num_planes+1)/2)*2
+	planes = torch.round(torch.linspace(min_disp-epsilon, max_disp+epsilon, args.num_planes+1)/2)*2
 	base_shift = int(max_disp//2)
 	offsets = [ int((planes[i]/2+planes[i+1]/2)//2) for i in range(args.num_planes)]
 
