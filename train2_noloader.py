@@ -476,10 +476,11 @@ def separate_train(args):
 	max_disp = torch.max(disp)
 	min_disp = torch.min(disp)
 	planes = torch.round(torch.linspace(min_disp-epsilon, max_disp+epsilon, args.num_planes+1)/2)*2
-	base_shift = int(max_disp//2)
+	# base_shift = int(max_disp//2)
 	offsets = [ int((planes[i]/2+planes[i+1]/2)//2) for i in range(args.num_planes)]
 
-	# print(f"offsets: {offsets}, baseshift: {base_shift}")
+	base_shift = offsets[layer_n]
+	print(f"offsets: {offsets}, baseshift: {base_shift}")
 
 	coords_h = np.linspace(-1, 1, h_res, endpoint=False)
 	coords_w = np.linspace(-1, 1,  w_res + base_shift * 2, endpoint=False)
@@ -492,14 +493,16 @@ def separate_train(args):
 	if args.use_viinter:
 		net_scene = VIINTER(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat= 4, W=args.n_c, with_res=False, with_norm=True).cuda()
 	else:
-		net_scene = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=4, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
-	
+		net_scene = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = args.n_embed, in_feat=2, out_feat=4, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
+
 	if args.use_viinter:
 		optimizer = torch.optim.Adam(net_scene.parameters(), lr=1e-5)
+		scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_iters, eta_min=1e-6)
+		print("use_viinter")
+
 	else:
 		optimizer = torch.optim.Adam(net_scene.parameters(), lr=args.lr)
-
-	scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = int(args.num_iters*0.2), gamma = 0.5)
+		scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = int(args.num_iters*0.5), gamma = 0.5)
 
 	print("net_scene: ", net_scene)
 
@@ -561,7 +564,26 @@ def separate_train(args):
 
 					scene_loss = scene_loss + vgloss
 			else:
-				scene_loss = scene_loss + metric_mse(mask_imgL, out_L_shift*maskL)
+				recon_out_vg = out_L_shift
+				recon_gt_vg = imgL*(1-maskL) + mask_imgL*(maskL)
+
+				mseloss = metric_mse(recon_gt_vg, recon_out_vg)
+				scene_loss = scene_loss + mseloss
+
+				if args.w_vgg>0:
+					if args.recon_vg:
+						recon_out_vg = imgL*(1-maskL) + out_L_shift*(maskL)
+						recon_gt_vg = imgL*(1-maskL) + mask_imgL*(maskL)
+
+						gt_vg = VGGpreprocess(recon_gt_vg)
+						out_vg = VGGpreprocess(recon_out_vg)
+						vgloss = metric_vgg(gt_vg, out_vg) * args.w_vgg
+					else:
+						mask_imgL_vg = VGGpreprocess(mask_imgL.unsqueeze(0))
+						out_L_shift_vg = VGGpreprocess(out_L_shift)
+						vgloss = metric_vgg(mask_imgL_vg, out_L_shift_vg) * args.w_vgg
+
+					scene_loss = scene_loss + vgloss
 
 			## mask
 			mask_L_shift = out_L[:, 3:4, :, base_shift - offsets[layer_n]:base_shift + w_res - offsets[layer_n]]
@@ -595,7 +617,26 @@ def separate_train(args):
 
 					scene_loss = scene_loss + vgloss
 			else:
-				scene_loss = scene_loss + metric_mse(mask_imgR, out_R_shift*maskR)
+
+				recon_out_vg = out_R_shift
+				recon_gt_vg = imgR*(1-maskR) + mask_imgR*maskR
+
+				mseloss = metric_mse(recon_gt_vg, recon_out_vg)
+				scene_loss = scene_loss + mseloss
+
+				if args.w_vgg>0:
+					if args.recon_vg:
+						recon_out_vg = imgR*(1-maskR) + out_R_shift*maskR
+						recon_gt_vg = imgR*(1-maskR) + mask_imgR*maskR
+						gt_vg = VGGpreprocess(recon_gt_vg)
+						out_vg = VGGpreprocess(recon_out_vg)
+						vgloss = metric_vgg(gt_vg, out_vg) * args.w_vgg
+					else:
+						mask_imgR_vg = VGGpreprocess(mask_imgR.unsqueeze(0))
+						out_R_shift_vg = VGGpreprocess(out_R_shift)
+						vgloss = metric_vgg(mask_imgR_vg, out_R_shift_vg) * args.w_vgg
+
+					scene_loss = scene_loss + vgloss
 
 			## mask
 			mask_R_shift = out_R[:, 3:4, :, base_shift + offsets[layer_n]:base_shift + w_res + offsets[layer_n]]
@@ -657,6 +698,317 @@ def separate_train(args):
 		iter +=1
 
 
+def separate_rgbmask(args):
+
+	layer_n = args.separate_layer
+
+	device = "cuda"
+
+	save_imgpath = os.path.join(args.savepath, f"{args.option}_imgs{layer_n}")
+	save_modelpath = os.path.join(args.savepath, f"{args.option}_ckpt{layer_n}")
+
+	if not os.path.exists(save_imgpath):
+		os.makedirs(save_imgpath)
+
+	if not os.path.exists(save_modelpath):
+		os.makedirs(save_modelpath)
+
+	h_res = args.resolution[0]
+	w_res = args.resolution[1]
+
+	L_tag = torch.tensor([0]).cuda()
+	R_tag = torch.tensor([1]).cuda()
+
+	## ------------------------ no use dataloader -------------------
+
+	########### load image 
+	imgL_name = f"rgba_00000.png"
+	imgR_name = f"rgba_00011.png"
+	imgL_pil = Image.open(join(args.datapath, imgL_name)).convert("RGB")
+	imgR_pil = Image.open(join(args.datapath,imgR_name)).convert("RGB")
+
+	imgL = torch.from_numpy(np.array(imgL_pil)).permute(2,0,1)/255.
+	imgR = torch.from_numpy(np.array(imgR_pil)).permute(2,0,1)/255.
+
+	imgL = imgL.unsqueeze(0).to(device)
+	imgR = imgR.unsqueeze(0).to(device)
+
+	########### load mask 
+
+	maskL_name = f"warpmask{layer_n}_00000.png"
+	maskR_name = f"warpmask{layer_n}_00011.png"
+
+	rgbL_name = f"warprgb{layer_n}_00000.png"
+	rgbR_name = f"warprgb{layer_n}_00011.png"
+
+	# left
+	maskL = np.array(Image.open(join(args.datapath,maskL_name))).astype(np.float32)
+	rgbL = np.array(Image.open(join(args.datapath,rgbL_name))).astype(np.float32)
+	maskL = torch.from_numpy(maskL).permute(2,0,1)[0,:,:]/255.
+	rgbL = torch.from_numpy(rgbL).permute(2,0,1)/255.
+
+	# right
+	maskR = np.array(Image.open(join(args.datapath,maskR_name))).astype(np.float32)
+	rgbR = np.array(Image.open(join(args.datapath,rgbR_name))).astype(np.float32)
+	maskR = torch.from_numpy(maskR).permute(2,0,1)[0,:,:]/255.
+	rgbR = torch.from_numpy(rgbR).permute(2,0,1)/255.
+
+	rgbR = rgbR.to(device)
+	maskR = maskR.to(device)	
+	rgbL = rgbL.to(device)
+	maskL = maskL.to(device)
+
+	########### load disparity
+	disp = np.load(os.path.join(args.datapath,"disp_0_11.npy"))
+
+
+	# ------------------------ start processing -----------------------
+
+	# all_maskL = all_maskL.to(device)
+	# all_maskR = all_maskR.to(device)
+	disp = torch.from_numpy(disp).to(device)
+
+	mask_imgL = rgbL
+	saveimg(mask_imgL, f"{save_imgpath}/{layer_n}_outL_gt.png")
+
+	mask_imgR = rgbR
+	saveimg(mask_imgR, f"{save_imgpath}/{layer_n}_outR_gt.png")
+
+	saveimg(maskL.unsqueeze(0).repeat(3,1,1), f"{save_imgpath}/{layer_n}_maskL_gt.png")
+	saveimg(maskR.unsqueeze(0).repeat(3,1,1), f"{save_imgpath}/{layer_n}_maskR_gt.png")
+
+
+	# compute offsets, baseline (scene-dependent)
+	epsilon=1e-2
+	disp = torch.abs(disp[:,:,0])
+	max_disp = torch.max(disp)
+	min_disp = torch.min(disp)
+	planes = torch.round(torch.linspace(min_disp-epsilon, max_disp+epsilon, args.num_planes+1)/2)*2
+	# base_shift = int(max_disp//2)
+	offsets = [ int((planes[i]/2+planes[i+1]/2)//2) for i in range(args.num_planes)]
+	base_shift = offsets[layer_n]
+
+
+	# print(f"offsets: {offsets}, baseshift: {base_shift}")
+
+	coords_h = np.linspace(-1, 1, h_res, endpoint=False)
+	coords_w = np.linspace(-1, 1,  w_res + base_shift * 2, endpoint=False)
+	# coords_w = np.linspace(-1, 1,  w_res, endpoint=False)
+	xy_grid = np.stack(np.meshgrid(coords_w, coords_h), -1)
+	xy_grid = torch.FloatTensor(xy_grid).cuda()
+	grid_inp = xy_grid.view(-1, 2).contiguous().unsqueeze(0)
+
+	# ----------------------- define network --------------------------------------
+	if args.use_viinter:
+		net_scene = VIINTER(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat= 4, W=args.n_c, with_res=False, with_norm=True).cuda()
+	else:
+		net_scene = CondSIREN(n_emb = 2, norm_p = 1, inter_fn=linterp, D=args.n_layer, z_dim = 128, in_feat=2, out_feat=1 if args.option=="mask" else 3, W=args.n_c, with_res=False, with_norm=args.use_norm, use_sig=args.use_sigmoid).cuda()
+	
+	if args.use_viinter:
+		optimizer = torch.optim.Adam(net_scene.parameters(), lr=1e-5)
+	else:
+		optimizer = torch.optim.Adam(net_scene.parameters(), lr=args.lr)
+
+	# scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = int(args.num_iters*0.5), gamma = 0.5)
+
+	print("net_scene: ", net_scene)
+
+	# for metric
+	metric_l1 = nn.L1Loss()
+	metric_mse = nn.MSELoss()
+
+	# for metric
+	if args.w_vgg>0:
+		metric_vgg = VGGLoss()
+
+	mseloss = 0
+	vgloss = 0
+	blend_loss = 0
+	inter_loss = 0
+
+	xp = [0, 1]
+	fp = [-2, 2]
+
+	iter = 0
+	shuffle = True
+
+	while iter < args.num_iters+1:
+
+		mseloss = torch.tensor(0.).cuda()
+		vgloss = torch.tensor(0.).cuda()
+		scene_loss = torch.tensor(0.).cuda()
+
+		# ----------- shuffle ------------------------
+		flag = random.choice([True, False])
+		# flag = True
+
+		if flag:
+
+			out_L = net_scene(grid_inp, L_tag)
+			out_L = out_L.reshape(1, h_res, -1, 1 if args.option=="mask" else 3).permute(0,3,1,2)
+
+			## rgb
+			if args.option=="rgb":
+
+				out_L_shift = out_L[:, :, :, base_shift - offsets[layer_n]:base_shift + w_res - offsets[layer_n]]
+				mask_imgL = rgbL
+
+				if args.out_black:
+					mseloss = metric_mse(mask_imgL, out_L_shift)
+					scene_loss = scene_loss + mseloss
+
+					if args.w_vgg>0:
+						if args.recon_vg:
+							recon_out_vg = imgL*(1-maskL) + out_L_shift*(maskL)
+							recon_gt_vg = imgL*(1-maskL) + mask_imgL*(maskL)
+
+							gt_vg = VGGpreprocess(recon_gt_vg)
+							out_vg = VGGpreprocess(recon_out_vg)
+							vgloss = metric_vgg(gt_vg, out_vg) * args.w_vgg
+						else:
+							mask_imgL_vg = VGGpreprocess(mask_imgL.unsqueeze(0))
+							out_L_shift_vg = VGGpreprocess(out_L_shift)
+							vgloss = metric_vgg(mask_imgL_vg, out_L_shift_vg) * args.w_vgg
+
+						scene_loss = scene_loss + vgloss
+				else:
+					recon_out_vg = out_L_shift
+					recon_gt_vg = imgL*(1-maskL) + mask_imgL*(maskL)
+
+					mseloss = metric_mse(recon_gt_vg, recon_out_vg)
+					scene_loss = scene_loss + mseloss
+
+					if args.w_vgg>0:
+						if args.recon_vg:
+							recon_out_vg = imgL*(1-maskL) + out_L_shift*(maskL)
+							recon_gt_vg = imgL*(1-maskL) + mask_imgL*(maskL)
+
+							gt_vg = VGGpreprocess(recon_gt_vg)
+							out_vg = VGGpreprocess(recon_out_vg)
+							vgloss = metric_vgg(gt_vg, out_vg) * args.w_vgg
+						else:
+							mask_imgL_vg = VGGpreprocess(mask_imgL.unsqueeze(0))
+							out_L_shift_vg = VGGpreprocess(out_L_shift)
+							vgloss = metric_vgg(mask_imgL_vg, out_L_shift_vg) * args.w_vgg
+
+						scene_loss = scene_loss + vgloss
+
+			## mask
+			if args.option=="mask":
+				mask_L_shift = out_L[:, :, :, base_shift - offsets[layer_n]:base_shift + w_res - offsets[layer_n]]
+				scene_loss = scene_loss + metric_mse(mask_L_shift, maskL)
+
+
+		else:
+			out_R = net_scene(grid_inp, R_tag)
+			out_R = out_R.reshape(1, h_res, -1, 1 if args.option=="mask" else 3).permute(0,3,1,2)
+
+			## rgb
+			if args.option=="rgb":
+				out_R_shift = out_R[:, :, :, base_shift + offsets[layer_n]:base_shift + w_res + offsets[layer_n]]
+				mask_imgR = rgbR
+
+				if args.out_black:
+					mseloss = metric_mse(mask_imgR, out_R_shift)
+					scene_loss = scene_loss + mseloss
+
+					if args.w_vgg>0:
+						if args.recon_vg:
+							recon_out_vg = imgR*(1-maskR) + out_R_shift*maskR
+							recon_gt_vg = imgR*(1-maskR) + mask_imgR*maskR
+							gt_vg = VGGpreprocess(recon_gt_vg)
+							out_vg = VGGpreprocess(recon_out_vg)
+							vgloss = metric_vgg(gt_vg, out_vg) * args.w_vgg
+						else:
+							mask_imgR_vg = VGGpreprocess(mask_imgR.unsqueeze(0))
+							out_R_shift_vg = VGGpreprocess(out_R_shift)
+							vgloss = metric_vgg(mask_imgR_vg, out_R_shift_vg) * args.w_vgg
+
+						scene_loss = scene_loss + vgloss
+				else:
+
+					recon_out_vg = out_R_shift
+					recon_gt_vg = imgR*(1-maskR) + mask_imgR*maskR
+
+					mseloss = metric_mse(recon_gt_vg, recon_out_vg)
+					scene_loss = scene_loss + mseloss
+
+					if args.w_vgg>0:
+						if args.recon_vg:
+							recon_out_vg = imgR*(1-maskR) + out_R_shift*maskR
+							recon_gt_vg = imgR*(1-maskR) + mask_imgR*maskR
+							gt_vg = VGGpreprocess(recon_gt_vg)
+							out_vg = VGGpreprocess(recon_out_vg)
+							vgloss = metric_vgg(gt_vg, out_vg) * args.w_vgg
+						else:
+							mask_imgR_vg = VGGpreprocess(mask_imgR.unsqueeze(0))
+							out_R_shift_vg = VGGpreprocess(out_R_shift)
+							vgloss = metric_vgg(mask_imgR_vg, out_R_shift_vg) * args.w_vgg
+
+						scene_loss = scene_loss + vgloss
+
+			## mask
+			if args.option=="mask":
+				mask_R_shift = out_R[:, :, :, base_shift + offsets[layer_n]:base_shift + w_res + offsets[layer_n]]
+				scene_loss = scene_loss + metric_mse(mask_R_shift, maskR)
+
+
+			# ----------- end of shuffle ------------------------
+			
+		optimizer.zero_grad()
+		scene_loss.backward()
+		optimizer.step()
+		# scheduler.step()
+
+
+		if (iter % args.progress_iter) ==0:
+
+			lr = optimizer.param_groups[0]['lr']
+			print(f"iterations: {iter}, lr: {lr}, mseloss: {mseloss}, vgloss: {vgloss}, scene_loss: {scene_loss}, inter_loss: {inter_loss}")
+			print(f"offset: {offsets}, base_shift: {base_shift}, planes: {planes},")
+
+			save_dict = { 
+						'mlp':net_scene.state_dict(), \
+						'num_planes':args.num_planes, \
+						}
+			torch.save(save_dict, "%s/model_%s.ckpt"%(save_modelpath, str(iter)))
+			# save_progress() if not args.debug else save_progress_debug(model_out, gt_img, iter)
+
+			with torch.no_grad():
+
+				z0 = net_scene.ret_z(torch.LongTensor([0.]).cuda()).squeeze()
+				z1 = net_scene.ret_z(torch.LongTensor([1.]).cuda()).squeeze()
+
+				zi = linterp(0.5, z0, z1).unsqueeze(0)
+				out = net_scene.forward_with_z(grid_inp, zi)
+				out = out.reshape(1, h_res, -1, 1 if args.option=="mask" else 3).permute(0,3,1,2)
+
+
+			# ----------- shuffle ------------------------
+			if flag:
+
+				if args.option=="rgb":
+					saveimg(out_L_shift, f"{save_imgpath}/{layer_n}_outL_{iter}.png")
+					saveimg(out, f"{save_imgpath}/{layer_n}_out_{iter}.png")
+
+				elif args.option=="mask":
+					saveimg(mask_L_shift.repeat(1,3,1,1), f"{save_imgpath}/{layer_n}_maskL_{iter}.png")
+					saveimg(out.repeat(1,3,1,1), f"{save_imgpath}/{layer_n}_mask_{iter}.png")
+
+			else:
+				if args.option=="rgb":
+					saveimg(out_R_shift, f"{save_imgpath}/{layer_n}_outR_{iter}.png")
+					saveimg(out, f"{save_imgpath}/{layer_n}_out_{iter}.png")
+				
+				elif args.option=="mask":
+					saveimg(mask_R_shift.repeat(1,3,1,1), f"{save_imgpath}/{layer_n}_maskR_{iter}.png")
+					saveimg(out.repeat(1,3,1,1), f"{save_imgpath}/{layer_n}_mask_{iter}.png")
+
+			if args.recon_vg and args.option=="rgb":
+				saveimg(recon_out_vg, f"{save_imgpath}/{layer_n}_outvg_{iter}.png")
+				saveimg(recon_gt_vg, f"{save_imgpath}/{layer_n}_gtvg_{iter}.png")
+
+		iter +=1
 
 
 def hyper_train(args):
@@ -976,8 +1328,8 @@ if __name__=='__main__':
 	parser.add_argument('--nfg',type=int,help='capacity multiplier',default = 8)
 	parser.add_argument('--num_planes',type=int,help='number of planes',default = 6)
 	parser.add_argument('--num_freqs_pe', type=int,help='#frequencies for positional encoding',default = 5)
-	parser.add_argument('--num_iters',type=int,help='num of iterations',default = 250000)
-	parser.add_argument('--progress_iter',type=int,help='update frequency',default = 50000)
+	parser.add_argument('--num_iters',type=int,help='num of iterations',default = 50000)
+	parser.add_argument('--progress_iter',type=int,help='update frequency',default = 25000)
 	parser.add_argument('--lr',type=float,help='learning rate',default = 1e-4)
 	parser.add_argument('--savepath',type=str,help='saving path',default = 'resultsTest1')
 	parser.add_argument('--w_vgg',help='weight of loss',type=float,default = 0.0)
@@ -1006,8 +1358,10 @@ if __name__=='__main__':
 	parser.add_argument('--mask_only',help='output maskonly',action='store_true')
 	parser.add_argument('--n_c',help='number of channel in netMet',type=int,default = 256)
 	parser.add_argument('--batch_size',help='batch size ',type=int,default = 1)
+	parser.add_argument('--n_embed',help='n_embed ',type=int,default = 128)
 	parser.add_argument('--datapath',help='the path of training dataset',type=str,default="../../Dataset/SynData_s1_all")
 	parser.add_argument('--config',help='the config path',type=str,default="./config/config.json")
+	parser.add_argument('--option', help='NA or rgb or mask', type=str, default="NA")
 	args = parser.parse_args()
 
 
@@ -1017,11 +1371,15 @@ if __name__=='__main__':
 	if not os.path.exists(args.savepath):
 		os.makedirs(args.savepath)
 
+	if args.option=="NA":
 
-	if args.hypernet:
-		hyper_train(args)
-	else:
-		if args.separate_layer >= 0:
-			separate_train(args)
+		if args.hypernet:
+			hyper_train(args)
 		else:
-			regular_train(args)
+			if args.separate_layer >= 0:
+				separate_train(args)
+			else:
+				regular_train(args)
+	else:
+
+		separate_rgbmask(args)
