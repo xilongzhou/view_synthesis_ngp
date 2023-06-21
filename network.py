@@ -9,6 +9,7 @@ import torch.nn as nn
 from collections import OrderedDict
 
 import sys
+import math
 
 ### ------------------------- copying from VIINTER ---------------------------
 
@@ -157,13 +158,16 @@ class UNet2dBlock(nn.Module):
         return self.act(self.net(input))
 
 class Unet_Blend(nn.Module):
-    def __init__(self, in_c, out_c, layer_n, res, n_c=32):
+    def __init__(self, in_c, out_c,  res, layer_n=4, n_c=32):
         super().__init__()
         self.layer_n = layer_n
 
         self.up = torch.nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True) # bilinear
 
         padx,pady = self.upsampling_factor_padding(res[0],res[1])
+
+        print("padx: ", padx)
+        print("pady: ", pady)
 
         for i in range(layer_n):
             in_channel = in_c if i==0 else n_c*2**(i-1)
@@ -188,11 +192,13 @@ class Unet_Blend(nn.Module):
             #     setattr(self, f"deco_{i}" , UNet2dBlock(in_channel, out_channel, k_size=3, stride=1, pad=recon_p, islast=False))
             #     print(i, recon_p)
 
+            recon_p = (1, 1+padx[-i-1], 1, 1-pady[-i-1])
 
-            if i==0:
-                recon_p = (1, 1+padx[-i-2], 1, pady[-i-2])
-            else:
-                recon_p = (1, 1, 1, 1)
+            # if i==0:
+            #     recon_p = (1, 1+padx[-i-1], 1, 2-pady[-i-1])
+            # else:
+            #     recon_p = (1, 1, 1, 1)
+            # print("recon_p: ", recon_p)
 
             if i==layer_n-1:
                 setattr(self, f"deco_{i}" , UNet2dBlock(in_channel, out_channel, k_size=3, stride=1, pad=recon_p, islast=True))
@@ -211,8 +217,12 @@ class Unet_Blend(nn.Module):
 
             padx.append(tmp_x%2)
             pady.append(tmp_y%2)
-            tmp_x = tmp_x//2
-            tmp_y = tmp_y//2
+            tmp_x = math.ceil(tmp_x/2)
+            tmp_y = math.ceil(tmp_y/2)
+
+            # print(tmp_y)
+
+        # print(pady)
 
         return padx, pady
 
@@ -232,12 +242,12 @@ class Unet_Blend(nn.Module):
         deconvs=[]
         for i in range(self.layer_n):
             block = getattr(self, f"deco_{i}" )
+
             if i==0:
                 deconv = block(self.up(convs[-1]))
             else:
                 tmp = torch.cat([deconvs[-1], convs[-1-i]], dim=1)
                 deconv = block(self.up(tmp))
-
             # print(f"{i} deconv: {deconv.shape}")
 
             deconvs.append(deconv)
